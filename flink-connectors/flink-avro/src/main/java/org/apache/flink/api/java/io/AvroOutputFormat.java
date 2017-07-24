@@ -25,6 +25,7 @@ import org.apache.flink.core.fs.Path;
 import org.apache.avro.Schema;
 import org.apache.avro.file.CodecFactory;
 import org.apache.avro.file.DataFileWriter;
+import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.avro.io.DatumWriter;
 import org.apache.avro.reflect.ReflectData;
 import org.apache.avro.reflect.ReflectDatumWriter;
@@ -32,7 +33,6 @@ import org.apache.avro.specific.SpecificDatumWriter;
 
 import java.io.IOException;
 import java.io.Serializable;
-import org.apache.avro.generic.GenericDatumWriter;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -129,13 +129,13 @@ public class AvroOutputFormat<E> extends FileOutputFormat<E> implements Serializ
 		DatumWriter<E> datumWriter;
 		Schema schema;
 		if (org.apache.avro.generic.GenericData.Record.class == avroValueType) {
-     		 datumWriter = new GenericDatumWriter<E>();
-     		 if (this.userDefinedSchema == null) {
-       		 throw new RuntimeException("schema need to set in GenericRecord");
-      		} else {
-     		   schema = this.userDefinedSchema;
-      	}
-    	} else if (org.apache.avro.specific.SpecificRecordBase.class.isAssignableFrom(avroValueType)) {
+			datumWriter = new GenericDatumWriter<E>();
+			if (this.userDefinedSchema == null) {
+				throw new RuntimeException("schema need to set in GenericRecord");
+			} else {
+				schema = this.userDefinedSchema;
+		}
+		} else if (org.apache.avro.specific.SpecificRecordBase.class.isAssignableFrom(avroValueType)) {
 			datumWriter = new SpecificDatumWriter<E>(avroValueType);
 			try {
 				schema = ((org.apache.avro.specific.SpecificRecordBase) avroValueType.newInstance()).getSchema();
