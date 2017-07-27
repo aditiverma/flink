@@ -13,12 +13,12 @@ dependencies:
     - git clone https://github.com/BranchMetrics/deploy.git
     - cp deploy/maven/settings.xml $HOME/.m2/
   override:
-    - mvn -B clean compile
+    - mvn -B clean compile -DskipTests -Drat.skip=true
   post:
 
 test:
   override:
-    - mvn -B clean package
+    - mvn -B clean package -DskipTests -Drat.skip=true
 
 deployment:
   staging:
