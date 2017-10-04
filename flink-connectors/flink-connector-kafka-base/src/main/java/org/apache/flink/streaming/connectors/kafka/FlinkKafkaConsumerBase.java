@@ -26,6 +26,7 @@ import org.apache.flink.api.java.ClosureCleaner;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.metrics.Counter;
 import org.apache.flink.runtime.state.CheckpointListener;
 import org.apache.flink.runtime.state.DefaultOperatorStateBackend;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
@@ -41,7 +42,9 @@ import org.apache.flink.streaming.connectors.kafka.config.OffsetCommitMode;
 import org.apache.flink.streaming.connectors.kafka.config.OffsetCommitModes;
 import org.apache.flink.streaming.connectors.kafka.config.StartupMode;
 import org.apache.flink.streaming.connectors.kafka.internals.AbstractFetcher;
+import org.apache.flink.streaming.connectors.kafka.internals.KafkaCommitCallback;
 import org.apache.flink.streaming.connectors.kafka.internals.KafkaTopicPartition;
+import org.apache.flink.streaming.connectors.kafka.internals.KafkaTopicPartitionAssigner;
 import org.apache.flink.streaming.connectors.kafka.internals.KafkaTopicPartitionStateSentinel;
 import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema;
 import org.apache.flink.util.Preconditions;
@@ -140,6 +143,27 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 	
 	/** Flag indicating whether the consumer is still running **/
 	private volatile boolean running = true;
+
+	/** Whether this operator instance was restored from checkpointed state. */
+	private transient boolean restored = false;
+
+	// ------------------------------------------------------------------------
+	//  internal metrics
+	// ------------------------------------------------------------------------
+
+	/** Counter for successful Kafka offset commits. */
+	private transient Counter successfulCommits;
+
+	/** Counter for failed Kafka offset commits. */
+	private transient Counter failedCommits;
+
+	/** Callback interface that will be invoked upon async Kafka commit completion.
+	 *  Please be aware that default callback implementation in base class does not
+	 *  provide any guarantees on thread-safety. This is sufficient for now because current
+	 *  supported Kafka connectors guarantee no more than 1 concurrent async pending offset
+	 *  commit.
+	 */
+	private transient KafkaCommitCallback offsetCommitCallback;
 
 	// ------------------------------------------------------------------------
 
@@ -347,24 +371,17 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 						getRuntimeContext().getIndexOfThisSubtask());
 		}
 
-		// initialize subscribed partitions
-		List<KafkaTopicPartition> kafkaTopicPartitions = getKafkaPartitions(topics);
-		Preconditions.checkNotNull(kafkaTopicPartitions, "TopicPartitions must not be null.");
-
-		subscribedPartitionsToStartOffsets = new HashMap<>(kafkaTopicPartitions.size());
-
-		if (restoredState != null) {
-			for (KafkaTopicPartition kafkaTopicPartition : kafkaTopicPartitions) {
-				if (restoredState.containsKey(kafkaTopicPartition)) {
-					subscribedPartitionsToStartOffsets.put(kafkaTopicPartition, restoredState.get(kafkaTopicPartition));
-				}
-			}
+		if (restored) {
+			subscribedPartitionsToStartOffsets = restoredState;
 
 			LOG.info("Consumer subtask {} will start reading {} partitions with offsets in restored state: {}",
 				getRuntimeContext().getIndexOfThisSubtask(), subscribedPartitionsToStartOffsets.size(), subscribedPartitionsToStartOffsets);
 		} else {
-			initializeSubscribedPartitionsToStartOffsets(
-				subscribedPartitionsToStartOffsets,
+			// initialize subscribed partitions
+			List<KafkaTopicPartition> kafkaTopicPartitions = getKafkaPartitions(topics);
+			Preconditions.checkNotNull(kafkaTopicPartitions, "TopicPartitions must not be null.");
+
+			subscribedPartitionsToStartOffsets = initializeSubscribedPartitionsToStartOffsets(
 				kafkaTopicPartitions,
 				getRuntimeContext().getIndexOfThisSubtask(),
 				getRuntimeContext().getNumberOfParallelSubtasks(),
@@ -423,6 +440,23 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 		if (subscribedPartitionsToStartOffsets == null) {
 			throw new Exception("The partitions were not set for the consumer");
 		}
+
+		// initialize commit metrics and default offset callback method
+		this.successfulCommits = this.getRuntimeContext().getMetricGroup().counter("commitsSucceeded");
+		this.failedCommits =  this.getRuntimeContext().getMetricGroup().counter("commitsFailed");
+
+		this.offsetCommitCallback = new KafkaCommitCallback() {
+			@Override
+			public void onSuccess() {
+				successfulCommits.inc();
+			}
+
+			@Override
+			public void onException(Throwable cause) {
+				LOG.error("Async Kafka commit failed.", cause);
+				failedCommits.inc();
+			}
+		};
 
 		// we need only do work, if we actually have partitions assigned
 		if (!subscribedPartitionsToStartOffsets.isEmpty()) {
@@ -500,7 +534,12 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 	// ------------------------------------------------------------------------
 
 	@Override
-	public void initializeState(FunctionInitializationContext context) throws Exception {
+	public final void initializeState(FunctionInitializationContext context) throws Exception {
+
+		// we might have been restored via restoreState() which restores from legacy operator state
+		if (!restored) {
+			restored = context.isRestored();
+		}
 
 		OperatorStateStore stateStore = context.getOperatorStateStore();
 		offsetsStateForCheckpoint = stateStore.getSerializableListState(DefaultOperatorStateBackend.DEFAULT_OPERATOR_STATE_NAME);
@@ -517,16 +556,13 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 					LOG.debug("Using the following offsets: {}", restoredState);
 				}
 			}
-			if (restoredState != null && restoredState.isEmpty()) {
-				restoredState = null;
-			}
 		} else {
 			LOG.info("No restore state for FlinkKafkaConsumer.");
 		}
 	}
 
 	@Override
-	public void snapshotState(FunctionSnapshotContext context) throws Exception {
+	public final void snapshotState(FunctionSnapshotContext context) throws Exception {
 		if (!running) {
 			LOG.debug("snapshotState() called on closed source");
 		} else {
@@ -571,11 +607,13 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 	}
 
 	@Override
-	public void restoreState(HashMap<KafkaTopicPartition, Long> restoredOffsets) {
+	public final void restoreState(HashMap<KafkaTopicPartition, Long> restoredOffsets) {
 		LOG.info("{} (taskIdx={}) restoring offsets from an older version.",
 			getClass().getSimpleName(), getRuntimeContext().getIndexOfThisSubtask());
 
-		restoredState = restoredOffsets.isEmpty() ? null : restoredOffsets;
+		restoredState = restoredOffsets.isEmpty()
+			? new HashMap<KafkaTopicPartition, Long>() : restoredOffsets;
+		restored = true;
 
 		if (LOG.isDebugEnabled()) {
 			LOG.debug("{} (taskIdx={}) restored offsets from an older Flink version: {}",
@@ -584,7 +622,7 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 	}
 
 	@Override
-	public void notifyCheckpointComplete(long checkpointId) throws Exception {
+	public final void notifyCheckpointComplete(long checkpointId) throws Exception {
 		if (!running) {
 			LOG.debug("notifyCheckpointComplete() called on closed source");
 			return;
@@ -622,7 +660,8 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 					LOG.debug("Checkpoint state was empty.");
 					return;
 				}
-				fetcher.commitInternalOffsetsToKafka(offsets);
+
+				fetcher.commitInternalOffsetsToKafka(offsets, offsetCommitCallback);
 			} catch (Exception e) {
 				if (running) {
 					throw e;
@@ -680,7 +719,6 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 	 * values. The method decides which partitions this consumer instance should subscribe to, and also
 	 * sets the initial offset each subscribed partition should be started from based on the configured startup mode.
 	 *
-	 * @param subscribedPartitionsToStartOffsets to subscribedPartitionsToStartOffsets to initialize
 	 * @param kafkaTopicPartitions the complete list of all Kafka partitions
 	 * @param indexOfThisSubtask the index of this consumer instance
 	 * @param numParallelSubtasks total number of parallel consumer instances
@@ -690,18 +728,20 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 	 *
 	 * Note: This method is also exposed for testing.
 	 */
-	protected static void initializeSubscribedPartitionsToStartOffsets(
-			Map<KafkaTopicPartition, Long> subscribedPartitionsToStartOffsets,
+	protected static Map<KafkaTopicPartition, Long> initializeSubscribedPartitionsToStartOffsets(
 			List<KafkaTopicPartition> kafkaTopicPartitions,
 			int indexOfThisSubtask,
 			int numParallelSubtasks,
 			StartupMode startupMode,
 			Map<KafkaTopicPartition, Long> specificStartupOffsets) {
 
-		for (int i = 0; i < kafkaTopicPartitions.size(); i++) {
-			if (i % numParallelSubtasks == indexOfThisSubtask) {
+		Map<KafkaTopicPartition, Long> subscribedPartitionsToStartOffsets = new HashMap<>(kafkaTopicPartitions.size());
+
+		for (KafkaTopicPartition kafkaTopicPartition : kafkaTopicPartitions) {
+			// only handle partitions that this subtask should subscribe to
+			if (KafkaTopicPartitionAssigner.assign(kafkaTopicPartition, numParallelSubtasks) == indexOfThisSubtask) {
 				if (startupMode != StartupMode.SPECIFIC_OFFSETS) {
-					subscribedPartitionsToStartOffsets.put(kafkaTopicPartitions.get(i), startupMode.getStateSentinel());
+					subscribedPartitionsToStartOffsets.put(kafkaTopicPartition, startupMode.getStateSentinel());
 				} else {
 					if (specificStartupOffsets == null) {
 						throw new IllegalArgumentException(
@@ -709,19 +749,19 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 								", but no specific offsets were specified");
 					}
 
-					KafkaTopicPartition partition = kafkaTopicPartitions.get(i);
-
-					Long specificOffset = specificStartupOffsets.get(partition);
+					Long specificOffset = specificStartupOffsets.get(kafkaTopicPartition);
 					if (specificOffset != null) {
 						// since the specified offsets represent the next record to read, we subtract
 						// it by one so that the initial state of the consumer will be correct
-						subscribedPartitionsToStartOffsets.put(partition, specificOffset - 1);
+						subscribedPartitionsToStartOffsets.put(kafkaTopicPartition, specificOffset - 1);
 					} else {
-						subscribedPartitionsToStartOffsets.put(partition, KafkaTopicPartitionStateSentinel.GROUP_OFFSET);
+						subscribedPartitionsToStartOffsets.put(kafkaTopicPartition, KafkaTopicPartitionStateSentinel.GROUP_OFFSET);
 					}
 				}
 			}
 		}
+
+		return subscribedPartitionsToStartOffsets;
 	}
 
 	/**

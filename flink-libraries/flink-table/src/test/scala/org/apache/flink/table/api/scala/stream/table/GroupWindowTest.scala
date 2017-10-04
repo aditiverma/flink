@@ -185,6 +185,28 @@ class GroupWindowTest extends TableTestBase {
       .select('string, weightedAvg('string, 'int)) // invalid UDAGG args
   }
 
+  @Test(expected = classOf[ValidationException])
+  def testInvalidWindowPropertyOnRowCountsTumblingWindow(): Unit = {
+    val util = streamTestUtil()
+    val table = util.addTable[(Long, Int, String)]('long, 'int, 'string, 'proctime.proctime)
+
+    table
+    .window(Tumble over 2.rows on 'proctime as 'w)
+    .groupBy('w, 'string)
+    .select('string, 'w.start, 'w.end) // invalid start/end on rows-count window
+  }
+
+  @Test(expected = classOf[ValidationException])
+  def testInvalidWindowPropertyOnRowCountsSlidingWindow(): Unit = {
+    val util = streamTestUtil()
+    val table = util.addTable[(Long, Int, String)]('long, 'int, 'string, 'proctime.proctime)
+
+    table
+    .window(Slide over 10.rows every 5.rows on 'proctime as 'w)
+    .groupBy('w, 'string)
+    .select('string, 'w.start, 'w.end) // invalid start/end on rows-count window
+  }
+
   @Test
   def testMultiWindow(): Unit = {
     val util = streamTestUtil()
@@ -928,8 +950,8 @@ class GroupWindowTest extends TableTestBase {
       ),
       term("select",
         "string",
-        "+(CAST(TMP_0), 1) AS s1",
-        "+(CAST(TMP_0), 3) AS s2",
+        "+(TMP_0, 1) AS s1",
+        "+(TMP_0, 3) AS s2",
         "TMP_1 AS x",
         "TMP_1 AS x2",
         "TMP_2 AS x3",
