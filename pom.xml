@@ -28,7 +28,7 @@ under the License.
 
 	<groupId>org.apache.flink</groupId>
 	<artifactId>flink-parent</artifactId>
-	<version>1.3.2</version>
+	<version>1.3.2-branch</version>
 
 	<name>flink</name>
 	<packaging>pom</packaging>
@@ -54,7 +54,9 @@ under the License.
 		<module>tools/force-shading</module>
 		<module>flink-annotations</module>
 		<module>flink-shaded-hadoop</module>
+<!-- commented for clash with druid /hadoop curator
 		<module>flink-shaded-curator</module>
+-->
 		<module>flink-core</module>
 		<module>flink-java</module>
 		<module>flink-scala</module>
