@@ -44,10 +44,24 @@ under the License.
 	</licenses>
 
 	<scm>
-		<url>https://github.com/apache/flink</url>
-		<connection>git@github.com:apache/flink.git</connection>
-		<developerConnection>scm:git:https://git-wip-us.apache.org/repos/asf/flink.git</developerConnection>
+		<connection>scm:git:git://github.com/BranchMetrics/flink.git</connection>
+		<developerConnection>scm:git:git@github.com:BranchMetrics/flink.git</developerConnection>
+		<url>https://github.com/BranchMetrics/flink.git</url>
+		<tag>1.3.2-branch</tag>
 	</scm>
+
+	<distributionManagement>
+		<repository>
+			<id>nexus</id>
+			<name>Nexus Release Repository</name>
+			<url>http://admin.branch.io:8081/nexus/content/repositories/releases</url>
+		</repository>
+		<snapshotRepository>
+			<id>nexus</id>
+			<name>Nexus Snapshot Repository</name>
+			<url>http://admin.branch.io:8081/nexus/content/repositories/snapshots</url>
+		</snapshotRepository>
+	</distributionManagement>
 
 	<modules>
 		<!-- Dummy module to force execution of the Maven Shade plugin (see Shade plugin below) -->
