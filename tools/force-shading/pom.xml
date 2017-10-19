@@ -38,10 +38,28 @@ under the License.
 
 	<groupId>org.apache.flink</groupId>
 	<artifactId>force-shading</artifactId>
-	<version>1.3.2-branch</version>
+	<version>1.3.2-branch-SNAPSHOT</version>
 
 	<packaging>jar</packaging>
+	<scm>
+		<connection>scm:git:git://github.com/BranchMetrics/flink.git</connection>
+		<developerConnection>scm:git:git@github.com:BranchMetrics/flink.git</developerConnection>
+		<url>https://github.com/BranchMetrics/flink.git</url>
+		<tag>1.3.2-branch-SNAPSHOT</tag>
+	</scm>
 
+	<distributionManagement>
+		<repository>
+			<id>nexus</id>
+			<name>Nexus Release Repository</name>
+			<url>http://admin.branch.io:8081/nexus/content/repositories/releases</url>
+		</repository>
+		<snapshotRepository>
+			<id>nexus</id>
+			<name>Nexus Snapshot Repository</name>
+			<url>http://admin.branch.io:8081/nexus/content/repositories/snapshots</url>
+		</snapshotRepository>
+	</distributionManagement>
 	<profiles>
 		<profile>
 			<id>release</id>
