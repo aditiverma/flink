@@ -24,7 +24,7 @@ deployment:
   staging:
     branch: branch_1.3.0
     commands:
-      - mvn -DscmCommentPrefix="[ci skip]" -B clean deploy
+      - mvn -DscmCommentPrefix="[ci skip]" -B clean deploy -DskipTests=true -Drat.skip=true
 
   production:
     branch: branch_prod
