@@ -10,7 +10,7 @@ dependencies:
   cache_directories:
     - "~/.m2/"
   pre:
-    - git clone https://github.com/BranchMetrics/deploy.git
+    - cd && git clone https://github.com/BranchMetrics/deploy.git
     - cp deploy/maven/settings.xml $HOME/.m2/
   override:
     - mvn -B clean compile -DskipTests -Drat.skip=true
