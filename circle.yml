@@ -19,7 +19,7 @@ dependencies:
 test:
   override:
     - mvn -B clean package -DskipTests -Drat.skip=true
-    - ./circle_build.sh
+    - ~/deploy/mesos/frameworks/flink/circle_build.sh
 
 deployment:
   staging:
