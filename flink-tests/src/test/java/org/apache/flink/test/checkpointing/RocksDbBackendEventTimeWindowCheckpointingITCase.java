@@ -18,10 +18,14 @@
 
 package org.apache.flink.test.checkpointing;
 
+/**
+ * Integration tests for fully synchronous RocksDB backend.
+ */
 public class RocksDbBackendEventTimeWindowCheckpointingITCase extends AbstractEventTimeWindowCheckpointingITCase {
 
-	public RocksDbBackendEventTimeWindowCheckpointingITCase() {
-		super(StateBackendEnum.ROCKSDB_FULLY_ASYNC);
+	@Override
+	protected StateBackendEnum getStateBackend() {
+		return StateBackendEnum.ROCKSDB_FULLY_ASYNC;
 	}
 
 	@Override

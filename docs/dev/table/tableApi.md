@@ -131,7 +131,7 @@ val result: Table = orders
         .select('a.lowerCase(), 'b, 'rowtime)
         .window(Tumble over 1.hour on 'rowtime as 'hourlyWindow)
         .groupBy('hourlyWindow, 'a)
-        .select('a, 'hourlyWindow.end as 'hour, 'b.avg as 'avgBillingAmount);
+        .select('a, 'hourlyWindow.end as 'hour, 'b.avg as 'avgBillingAmount)
 {% endhighlight %}
 
 </div>
@@ -344,7 +344,7 @@ Table orders = tableEnv.scan("Orders");
 Table result = orders
     .window(Tumble.over("5.minutes").on("rowtime").as("w")) // define window
     .groupBy("a, w") // group by key and window
-    .select("a, w.start, w.end, b.sum as d"); // access window properties and aggregate
+    .select("a, w.start, w.end, w.rowtime, b.sum as d"); // access window properties and aggregate
 {% endhighlight %}
       </td>
     </tr>
@@ -355,7 +355,7 @@ Table result = orders
       </td>
       <td>
        <p>Similar to a SQL OVER clause. Over window aggregates are computed for each row, based on a window (range) of preceding and succeeding rows. See the <a href="#over-windows">over windows section</a> for more details.</p>
-       {% highlight scala %}
+{% highlight java %}
 Table orders = tableEnv.scan("Orders");
 Table result = orders
     // define window
@@ -364,8 +364,8 @@ Table result = orders
       .orderBy("rowtime")
       .preceding("UNBOUNDED_RANGE")
       .following("CURRENT_RANGE")
-      .as("w")
-    .select("a, b.avg over w, b.max over w, b.min over w") // sliding aggregate
+      .as("w"))
+    .select("a, b.avg over w, b.max over w, b.min over w"); // sliding aggregate
 {% endhighlight %}
        <p><b>Note:</b> All aggregates must be defined over the same window, i.e., same partitioning, sorting, and range. Currently, only windows with PRECEDING (UNBOUNDED and bounded) to CURRENT ROW range are supported. Ranges with FOLLOWING are not supported yet. ORDER BY must be specified on a single <a href="streaming.html#time-attributes">time attribute</a>.</p>
       </td>
@@ -373,7 +373,8 @@ Table result = orders
     <tr>
       <td>
         <strong>Distinct</strong><br>
-        <span class="label label-primary">Batch</span>
+        <span class="label label-primary">Batch</span> <span class="label label-primary">Streaming</span> <br>
+        <span class="label label-info">Result Updating</span>
       </td>
       <td>
         <p>Similar to a SQL DISTINCT clause. Returns records with distinct value combinations.</p>
@@ -381,6 +382,7 @@ Table result = orders
 Table orders = tableEnv.scan("Orders");
 Table result = orders.distinct();
 {% endhighlight %}
+        <p><b>Note:</b> For streaming queries the required state to compute the query result might grow infinitely depending on the number of distinct fields. Please provide a query configuration with valid retention interval to prevent excessive state size. See <a href="streaming.html">Streaming Concepts</a> for details.</p>
       </td>
     </tr>
   </tbody>
@@ -425,7 +427,7 @@ val orders: Table = tableEnv.scan("Orders")
 val result: Table = orders
     .window(Tumble over 5.minutes on 'rowtime as 'w) // define window
     .groupBy('a, 'w) // group by key and window
-    .select('a, w.start, 'w.end, 'b.sum as 'd) // access window properties and aggregate
+    .select('a, w.start, 'w.end, 'w.rowtime, 'b.sum as 'd) // access window properties and aggregate
 {% endhighlight %}
       </td>
     </tr>
@@ -446,7 +448,7 @@ val result: Table = orders
       preceding UNBOUNDED_RANGE
       following CURRENT_RANGE
       as 'w)
-    .select('a, 'b.avg over 'w, 'b.max over 'w, 'b.min over 'w,) // sliding aggregate
+    .select('a, 'b.avg over 'w, 'b.max over 'w, 'b.min over 'w) // sliding aggregate
 {% endhighlight %}
        <p><b>Note:</b> All aggregates must be defined over the same window, i.e., same partitioning, sorting, and range. Currently, only windows with PRECEDING (UNBOUNDED and bounded) to CURRENT ROW range are supported. Ranges with FOLLOWING are not supported yet. ORDER BY must be specified on a single <a href="streaming.html#time-attributes">time attribute</a>.</p>
       </td>
@@ -462,6 +464,7 @@ val result: Table = orders
 val orders: Table = tableEnv.scan("Orders")
 val result = orders.distinct()
 {% endhighlight %}
+        <p><b>Note:</b> For streaming queries the required state to compute the query result might grow infinitely depending on the number of distinct fields. Please provide a query configuration with valid retention interval to prevent excessive state size. See <a href="streaming.html">Streaming Concepts</a> for details.</p>
       </td>
     </tr>
   </tbody>
@@ -488,6 +491,7 @@ val result = orders.distinct()
       <td>
         <strong>Inner Join</strong><br>
         <span class="label label-primary">Batch</span>
+        <span class="label label-primary">Streaming</span>
       </td>
       <td>
         <p>Similar to a SQL JOIN clause. Joins two tables. Both tables must have distinct field names and at least one equality join predicate must be defined through join operator or using a where or filter operator.</p>
@@ -496,56 +500,56 @@ Table left = tableEnv.fromDataSet(ds1, "a, b, c");
 Table right = tableEnv.fromDataSet(ds2, "d, e, f");
 Table result = left.join(right).where("a = d").select("a, b, e");
 {% endhighlight %}
+<p><b>Note:</b> For streaming queries the required state to compute the query result might grow infinitely depending on the number of distinct input rows. Please provide a query configuration with valid retention interval to prevent excessive state size. See <a href="streaming.html">Streaming Concepts</a> for details.</p>
       </td>
     </tr>
 
     <tr>
       <td>
-        <strong>Left Outer Join</strong><br>
+        <strong>Outer Joins</strong><br>
         <span class="label label-primary">Batch</span>
       </td>
       <td>
-        <p>Similar to a SQL LEFT OUTER JOIN clause. Joins two tables. Both tables must have distinct field names and at least one equality join predicate must be defined.</p>
+        <p>Similar to SQL LEFT/RIGHT/FULL OUTER JOIN clauses. Joins two tables. Both tables must have distinct field names and at least one equality join predicate must be defined.</p>
 {% highlight java %}
 Table left = tableEnv.fromDataSet(ds1, "a, b, c");
 Table right = tableEnv.fromDataSet(ds2, "d, e, f");
-Table result = left.leftOuterJoin(right, "a = d").select("a, b, e");
+
+Table leftOuterResult = left.leftOuterJoin(right, "a = d").select("a, b, e");
+Table rightOuterResult = left.rightOuterJoin(right, "a = d").select("a, b, e");
+Table fullOuterResult = left.fullOuterJoin(right, "a = d").select("a, b, e");
 {% endhighlight %}
       </td>
     </tr>
-
     <tr>
-      <td>
-        <strong>Right Outer Join</strong><br>
+      <td><strong>Time-windowed Join</strong><br>
         <span class="label label-primary">Batch</span>
+        <span class="label label-primary">Streaming</span>
       </td>
       <td>
-        <p>Similar to a SQL RIGHT OUTER JOIN clause. Joins two tables. Both tables must have distinct field names and at least one equality join predicate must be defined.</p>
-{% highlight java %}
-Table left = tableEnv.fromDataSet(ds1, "a, b, c");
-Table right = tableEnv.fromDataSet(ds2, "d, e, f");
-Table result = left.rightOuterJoin(right, "a = d").select("a, b, e");
-{% endhighlight %}
-      </td>
-    </tr>
+        <p><b>Note:</b> Time-windowed joins are a subset of regular joins that can be processed in a streaming fashion.</p>
 
-    <tr>
-      <td>
-        <strong>Full Outer Join</strong><br>
-        <span class="label label-primary">Batch</span>
-      </td>
-      <td>
-        <p>Similar to a SQL FULL OUTER JOIN clause. Joins two tables. Both tables must have distinct field names and at least one equality join predicate must be defined.</p>
+        <p>A time-windowed join requires at least one equi-join predicate and a join condition that bounds the time on both sides. Such a condition can be defined by two appropriate range predicates (<code>&lt;, &lt;=, &gt;=, &gt;</code>) or a single equality predicate that compares <a href="streaming.html#time-attributes">time attributes</a> of the same type (i.e., processing time or event time) of both input tables.</p> 
+        <p>For example, the following predicates are valid window join conditions:</p>
+
+        <ul>
+          <li><code>ltime === rtime</code></li>
+          <li><code>ltime &gt;= rtime &amp;&amp; ltime &lt; rtime + 10.minutes</code></li>
+        </ul>
+        
 {% highlight java %}
-Table left = tableEnv.fromDataSet(ds1, "a, b, c");
-Table right = tableEnv.fromDataSet(ds2, "d, e, f");
-Table result = left.fullOuterJoin(right, "a = d").select("a, b, e");
+Table left = tableEnv.fromDataSet(ds1, "a, b, c, ltime.rowtime");
+Table right = tableEnv.fromDataSet(ds2, "d, e, f, rtime.rowtime");
+
+Table result = left.join(right)
+  .where("a = d && ltime >= rtime - 5.minutes && ltime < rtime + 10.minutes")
+  .select("a, b, e, ltime");
 {% endhighlight %}
       </td>
     </tr>
     <tr>
     	<td>
-        <strong>TableFunction Join</strong><br>
+        <strong>TableFunction Inner Join</strong><br>
         <span class="label label-primary">Batch</span> <span class="label label-primary">Streaming</span>
       </td>
     	<td>
@@ -559,7 +563,7 @@ tEnv.registerFunction("split", split);
 // join
 Table orders = tableEnv.scan("Orders");
 Table result = orders
-    .join(new Table(tEnv, "split(c)").as("s", "t", "v")))
+    .join(new Table(tEnv, "split(c)").as("s", "t", "v"))
     .select("a, b, s, t, v");
 {% endhighlight %}
       </td>
@@ -571,6 +575,7 @@ Table result = orders
       </td>
       <td>
         <p>Joins a table with a the results of a table function. Each row of the left (outer) table is joined with all rows produced by the corresponding call of the table function. If a table function call returns an empty result, the corresponding outer row is preserved and the result padded with null values.
+        <p><b>Note:</b> Currently, the predicate of a table function left outer join can only be empty or literal <code>true</code>.</p>
         </p>
 {% highlight java %}
 // register function
@@ -580,7 +585,7 @@ tEnv.registerFunction("split", split);
 // join
 Table orders = tableEnv.scan("Orders");
 Table result = orders
-    .leftOuterJoin(new Table(tEnv, "split(c)").as("s", "t", "v")))
+    .leftOuterJoin(new Table(tEnv, "split(c)").as("s", "t", "v"))
     .select("a, b, s, t, v");
 {% endhighlight %}
       </td>
@@ -607,62 +612,60 @@ Table result = orders
         <span class="label label-primary">Batch</span>
       </td>
       <td>
-        <p>Similar to a SQL JOIN clause. Joins two tables. Both tables must have distinct field names and an equality join predicate must be defined using a where or filter operator.</p>
+        <p>Similar to a SQL JOIN clause. Joins two tables. Both tables must have distinct field names and at least one equality join predicate must be defined through join operator or using a where or filter operator.</p>
 {% highlight scala %}
-val left = ds1.toTable(tableEnv, 'a, 'b, 'c);
-val right = ds2.toTable(tableEnv, 'd, 'e, 'f);
-val result = left.join(right).where('a === 'd).select('a, 'b, 'e);
+val left = ds1.toTable(tableEnv, 'a, 'b, 'c)
+val right = ds2.toTable(tableEnv, 'd, 'e, 'f)
+val result = left.join(right).where('a === 'd).select('a, 'b, 'e)
 {% endhighlight %}
       </td>
     </tr>
-
     <tr>
       <td>
-        <strong>Left Outer Join</strong><br>
+        <strong>Outer Joins</strong><br>
         <span class="label label-primary">Batch</span>
       </td>
       <td>
-        <p>Similar to a SQL LEFT OUTER JOIN clause. Joins two tables. Both tables must have distinct field names and at least one equality join predicate must be defined.</p>
+        <p>Similar to SQL LEFT/RIGHT/FULL OUTER JOIN clauses. Joins two tables. Both tables must have distinct field names and at least one equality join predicate must be defined.</p>
 {% highlight scala %}
 val left = tableEnv.fromDataSet(ds1, 'a, 'b, 'c)
 val right = tableEnv.fromDataSet(ds2, 'd, 'e, 'f)
-val result = left.leftOuterJoin(right, 'a === 'd).select('a, 'b, 'e)
+
+val leftOuterResult = left.leftOuterJoin(right, 'a === 'd).select('a, 'b, 'e)
+val rightOuterResult = left.rightOuterJoin(right, 'a === 'd).select('a, 'b, 'e)
+val fullOuterResult = left.fullOuterJoin(right, 'a === 'd).select('a, 'b, 'e)
 {% endhighlight %}
       </td>
     </tr>
-
     <tr>
-      <td>
-        <strong>Right Outer Join</strong><br>
+      <td><strong>Time-windowed Join</strong><br>
         <span class="label label-primary">Batch</span>
+        <span class="label label-primary">Streaming</span>
       </td>
       <td>
-        <p>Similar to a SQL RIGHT OUTER JOIN clause. Joins two tables. Both tables must have distinct field names and at least one equality join predicate must be defined.</p>
-{% highlight scala %}
-val left = tableEnv.fromDataSet(ds1, 'a, 'b, 'c)
-val right = tableEnv.fromDataSet(ds2, 'd, 'e, 'f)
-val result = left.rightOuterJoin(right, 'a === 'd).select('a, 'b, 'e)
-{% endhighlight %}
-      </td>
-    </tr>
+        <p><b>Note:</b> Time-windowed joins are a subset of regular joins that can be processed in a streaming fashion.</p>
 
-    <tr>
-      <td>
-        <strong>Full Outer Join</strong><br>
-        <span class="label label-primary">Batch</span>
-      </td>
-      <td>
-        <p>Similar to a SQL FULL OUTER JOIN clause. Joins two tables. Both tables must have distinct field names and at least one equality join predicate must be defined.</p>
+        <p>A time-windowed join requires at least one equi-join predicate and a join condition that bounds the time on both sides. Such a condition can be defined by two appropriate range predicates (<code>&lt;, &lt;=, &gt;=, &gt;</code>) or a single equality predicate that compares <a href="streaming.html#time-attributes">time attributes</a> of the same type (i.e., processing time or event time) of both input tables.</p> 
+        <p>For example, the following predicates are valid window join conditions:</p>
+
+        <ul>
+          <li><code>'ltime === 'rtime</code></li>
+          <li><code>'ltime &gt;= 'rtime &amp;&amp; 'ltime &lt; 'rtime + 10.minutes</code></li>
+        </ul>
+
 {% highlight scala %}
-val left = tableEnv.fromDataSet(ds1, 'a, 'b, 'c)
-val right = tableEnv.fromDataSet(ds2, 'd, 'e, 'f)
-val result = left.fullOuterJoin(right, 'a === 'd).select('a, 'b, 'e)
+val left = ds1.toTable(tableEnv, 'a, 'b, 'c, 'ltime.rowtime)
+val right = ds2.toTable(tableEnv, 'd, 'e, 'f, 'rtime.rowtime)
+
+val result = left.join(right)
+  .where('a === 'd && 'ltime >= 'rtime - 5.minutes && 'ltime < 'rtime + 10.minutes)
+  .select('a, 'b, 'e, 'ltime)
 {% endhighlight %}
       </td>
     </tr>
     <tr>
     	<td>
-        <strong>TableFunction Join</strong><br>
+        <strong>TableFunction Inner Join</strong><br>
         <span class="label label-primary">Batch</span> <span class="label label-primary">Streaming</span>
       </td>
     	<td>
@@ -685,6 +688,7 @@ val result: Table = table
         <span class="label label-primary">Batch</span> <span class="label label-primary">Streaming</span></td>
     	<td>
         <p>Joins a table with a the results of a table function. Each row of the left (outer) table is joined with all rows produced by the corresponding call of the table function. If a table function call returns an empty result, the corresponding outer row is preserved and the result padded with null values.
+        <p><b>Note:</b> Currently, the predicate of a table function left outer join can only be empty or literal <code>true</code>.</p>
         </p>
 {% highlight scala %}
 // instantiate function
@@ -807,6 +811,27 @@ Table result = left.minusAll(right);
 {% endhighlight %}
       </td>
     </tr>
+
+    <tr>
+      <td>
+        <strong>In</strong><br>
+        <span class="label label-primary">Batch</span>
+      </td>
+      <td>
+        <p>Similar to a SQL IN clause. In returns true if an expression exists in a given table sub-query. The sub-query table must consist of one column. This column must have the same data type as the expression.</p>
+{% highlight java %}
+Table left = ds1.toTable(tableEnv, "a, b, c");
+Table right = ds2.toTable(tableEnv, "a");
+
+// using implicit registration
+Table result = left.select("a, b, c").where("a.in(" + right + ")");
+
+// using explicit registration
+tableEnv.registerTable("RightTable", right);
+Table result = left.select("a, b, c").where("a.in(RightTable)");
+{% endhighlight %}
+      </td>
+    </tr>
   </tbody>
 </table>
 
@@ -829,9 +854,9 @@ Table result = left.minusAll(right);
       <td>
         <p>Similar to a SQL UNION clause. Unions two tables with duplicate records removed, both tables must have identical field types.</p>
 {% highlight scala %}
-val left = ds1.toTable(tableEnv, 'a, 'b, 'c);
-val right = ds2.toTable(tableEnv, 'a, 'b, 'c);
-val result = left.union(right);
+val left = ds1.toTable(tableEnv, 'a, 'b, 'c)
+val right = ds2.toTable(tableEnv, 'a, 'b, 'c)
+val result = left.union(right)
 {% endhighlight %}
       </td>
     </tr>
@@ -845,9 +870,9 @@ val result = left.union(right);
       <td>
         <p>Similar to a SQL UNION ALL clause. Unions two tables, both tables must have identical field types.</p>
 {% highlight scala %}
-val left = ds1.toTable(tableEnv, 'a, 'b, 'c);
-val right = ds2.toTable(tableEnv, 'a, 'b, 'c);
-val result = left.unionAll(right);
+val left = ds1.toTable(tableEnv, 'a, 'b, 'c)
+val right = ds2.toTable(tableEnv, 'a, 'b, 'c)
+val result = left.unionAll(right)
 {% endhighlight %}
       </td>
     </tr>
@@ -860,9 +885,9 @@ val result = left.unionAll(right);
       <td>
         <p>Similar to a SQL INTERSECT clause. Intersect returns records that exist in both tables. If a record is present in one or both tables more than once, it is returned just once, i.e., the resulting table has no duplicate records. Both tables must have identical field types.</p>
 {% highlight scala %}
-val left = ds1.toTable(tableEnv, 'a, 'b, 'c);
-val right = ds2.toTable(tableEnv, 'e, 'f, 'g);
-val result = left.intersect(right);
+val left = ds1.toTable(tableEnv, 'a, 'b, 'c)
+val right = ds2.toTable(tableEnv, 'e, 'f, 'g)
+val result = left.intersect(right)
 {% endhighlight %}
       </td>
     </tr>
@@ -875,9 +900,9 @@ val result = left.intersect(right);
       <td>
         <p>Similar to a SQL INTERSECT ALL clause. IntersectAll returns records that exist in both tables. If a record is present in both tables more than once, it is returned as many times as it is present in both tables, i.e., the resulting table might have duplicate records. Both tables must have identical field types.</p>
 {% highlight scala %}
-val left = ds1.toTable(tableEnv, 'a, 'b, 'c);
-val right = ds2.toTable(tableEnv, 'e, 'f, 'g);
-val result = left.intersectAll(right);
+val left = ds1.toTable(tableEnv, 'a, 'b, 'c)
+val right = ds2.toTable(tableEnv, 'e, 'f, 'g)
+val result = left.intersectAll(right)
 {% endhighlight %}
       </td>
     </tr>
@@ -890,9 +915,9 @@ val result = left.intersectAll(right);
       <td>
         <p>Similar to a SQL EXCEPT clause. Minus returns records from the left table that do not exist in the right table. Duplicate records in the left table are returned exactly once, i.e., duplicates are removed. Both tables must have identical field types.</p>
 {% highlight scala %}
-val left = ds1.toTable(tableEnv, 'a, 'b, 'c);
-val right = ds2.toTable(tableEnv, 'a, 'b, 'c);
-val result = left.minus(right);
+val left = ds1.toTable(tableEnv, 'a, 'b, 'c)
+val right = ds2.toTable(tableEnv, 'a, 'b, 'c)
+val result = left.minus(right)
 {% endhighlight %}
       </td>
     </tr>
@@ -905,9 +930,24 @@ val result = left.minus(right);
       <td>
         <p>Similar to a SQL EXCEPT ALL clause. MinusAll returns the records that do not exist in the right table. A record that is present n times in the left table and m times in the right table is returned (n - m) times, i.e., as many duplicates as are present in the right table are removed. Both tables must have identical field types.</p>
 {% highlight scala %}
-val left = ds1.toTable(tableEnv, 'a, 'b, 'c);
-val right = ds2.toTable(tableEnv, 'a, 'b, 'c);
-val result = left.minusAll(right);
+val left = ds1.toTable(tableEnv, 'a, 'b, 'c)
+val right = ds2.toTable(tableEnv, 'a, 'b, 'c)
+val result = left.minusAll(right)
+{% endhighlight %}
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        <strong>In</strong><br>
+        <span class="label label-primary">Batch</span>
+      </td>
+      <td>
+        <p>Similar to a SQL IN clause. In returns true if an expression exists in a given table sub-query. The sub-query table must consist of one column. This column must have the same data type as the expression.</p>
+{% highlight scala %}
+val left = ds1.toTable(tableEnv, 'a, 'b, 'c)
+val right = ds2.toTable(tableEnv, 'a)
+val result = left.select('a, 'b, 'c).where('a.in(right))
 {% endhighlight %}
       </td>
     </tr>
@@ -919,11 +959,10 @@ val result = left.minusAll(right);
 
 {% top %}
 
-### OrderBy & Limit
+### OrderBy, Offset & Fetch
 
 <div class="codetabs" markdown="1">
 <div data-lang="java" markdown="1">
-
 <table class="table table-bordered">
   <thead>
     <tr>
@@ -932,54 +971,7 @@ val result = left.minusAll(right);
     </tr>
   </thead>
   <tbody>
-  	<tr>
-      <td>
-        <strong>Order By</strong><br>
-        <span class="label label-primary">Batch</span>
-      </td>
-      <td>
-        <p>Similar to a SQL ORDER BY clause. Returns records globally sorted across all parallel partitions.</p>
-{% highlight scala %}
-val in = ds.toTable(tableEnv, 'a, 'b, 'c);
-val result = in.orderBy('a.asc);
-{% endhighlight %}
-      </td>
-    </tr>
-
     <tr>
-      <td>
-        <strong>Limit</strong><br>
-        <span class="label label-primary">Batch</span>
-      </td>
-      <td>
-        <p>Similar to a SQL LIMIT clause. Limits a sorted result to a specified number of records from an offset position. Limit is technically part of the Order By operator and thus must be preceded by it.</p>
-{% highlight scala %}
-val in = ds.toTable(tableEnv, 'a, 'b, 'c);
-val result = in.orderBy('a.asc).limit(3); // returns unlimited number of records beginning with the 4th record
-{% endhighlight %}
-or
-{% highlight scala %}
-val in = ds.toTable(tableEnv, 'a, 'b, 'c);
-val result = in.orderBy('a.asc).limit(3, 5); // returns 5 records beginning with the 4th record
-{% endhighlight %}
-      </td>
-    </tr>
-
-  </tbody>
-</table>
-
-</div>
-<div data-lang="scala" markdown="1">
-
-<table class="table table-bordered">
-  <thead>
-    <tr>
-      <th class="text-left" style="width: 20%">Operators</th>
-      <th class="text-center">Description</th>
-    </tr>
-  </thead>
-  <tbody>
-  	<tr>
       <td>
         <strong>Order By</strong><br>
         <span class="label label-primary">Batch</span>
@@ -995,19 +987,71 @@ Table result = in.orderBy("a.asc");
 
     <tr>
       <td>
-        <strong>Limit</strong><br>
+        <strong>Offset &amp; Fetch</strong><br>
         <span class="label label-primary">Batch</span>
       </td>
       <td>
-        <p>Similar to a SQL LIMIT clause. Limits a sorted result to a specified number of records from an offset position. Limit is technically part of the Order By operator and thus must be preceded by it.</p>
+        <p>Similar to the SQL OFFSET and FETCH clauses. Offset and Fetch limit the number of records returned from a sorted result. Offset and Fetch are technically part of the Order By operator and thus must be preceded by it.</p>
 {% highlight java %}
 Table in = tableEnv.fromDataSet(ds, "a, b, c");
-Table result = in.orderBy("a.asc").limit(3); // returns unlimited number of records beginning with the 4th record
+
+// returns the first 5 records from the sorted result
+Table result1 = in.orderBy("a.asc").fetch(5); 
+
+// skips the first 3 records and returns all following records from the sorted result
+Table result2 = in.orderBy("a.asc").offset(3);
+
+// skips the first 10 records and returns the next 5 records from the sorted result
+Table result3 = in.orderBy("a.asc").offset(10).fetch(5);
 {% endhighlight %}
-or
-{% highlight java %}
-Table in = tableEnv.fromDataSet(ds, "a, b, c");
-Table result = in.orderBy("a.asc").limit(3, 5); // returns 5 records beginning with the 4th record
+      </td>
+    </tr>
+
+  </tbody>
+</table>
+</div>
+
+<div data-lang="scala" markdown="1">
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 20%">Operators</th>
+      <th class="text-center">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <strong>Order By</strong><br>
+        <span class="label label-primary">Batch</span>
+      </td>
+      <td>
+        <p>Similar to a SQL ORDER BY clause. Returns records globally sorted across all parallel partitions.</p>
+{% highlight scala %}
+val in = ds.toTable(tableEnv, 'a, 'b, 'c)
+val result = in.orderBy('a.asc)
+{% endhighlight %}
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        <strong>Offset &amp; Fetch</strong><br>
+        <span class="label label-primary">Batch</span>
+      </td>
+      <td>
+        <p>Similar to the SQL OFFSET and FETCH clauses. Offset and Fetch limit the number of records returned from a sorted result. Offset and Fetch are technically part of the Order By operator and thus must be preceded by it.</p>
+{% highlight scala %}
+val in = ds.toTable(tableEnv, 'a, 'b, 'c)
+
+// returns the first 5 records from the sorted result
+val result1: Table = in.orderBy('a.asc).fetch(5)
+
+// skips the first 3 records and returns all following records from the sorted result
+val result2: Table = in.orderBy('a.asc).offset(3)
+
+// skips the first 10 records and returns the next 5 records from the sorted result
+val result3: Table = in.orderBy('a.asc).offset(10).fetch(5)
 {% endhighlight %}
       </td>
     </tr>
@@ -1016,6 +1060,73 @@ Table result = in.orderBy("a.asc").limit(3, 5); // returns 5 records beginning w
 </table>
 </div>
 </div>
+
+### Insert
+
+<div class="codetabs" markdown="1">
+<div data-lang="java" markdown="1">
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 20%">Operators</th>
+      <th class="text-center">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <strong>Insert Into</strong><br>
+        <span class="label label-primary">Batch</span> <span class="label label-primary">Streaming</span>
+      </td>
+      <td>
+        <p>Similar to the INSERT INTO clause in a SQL query. Performs a insertion into a registered output table.</p>
+
+        <p>Output tables must be registered in the TableEnvironment (see <a href="common.html#register-a-tablesink">Register a TableSink</a>). Moreover, the schema of the registered table must match the schema of the query.</p>
+
+{% highlight java %}
+Table orders = tableEnv.scan("Orders");
+orders.insertInto("OutOrders");
+{% endhighlight %}
+      </td>
+    </tr>
+
+  </tbody>
+</table>
+</div>
+
+<div data-lang="scala" markdown="1">
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 20%">Operators</th>
+      <th class="text-center">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <strong>Insert Into</strong><br>
+        <span class="label label-primary">Batch</span> <span class="label label-primary">Streaming</span>
+      </td>
+      <td>
+        <p>Similar to the INSERT INTO clause in a SQL query. Performs a insertion into a registered output table.</p>
+
+        <p>Output tables must be registered in the TableEnvironment (see <a href="common.html#register-a-tablesink">Register a TableSink</a>). Moreover, the schema of the registered table must match the schema of the query.</p>
+
+{% highlight scala %}
+val orders: Table = tableEnv.scan("Orders")
+orders.insertInto("OutOrders")
+{% endhighlight %}
+      </td>
+    </tr>
+
+  </tbody>
+</table>
+</div>
+</div>
+
+{% top %}
 
 ### Group Windows
 
@@ -1067,7 +1178,7 @@ val table = input
 </div>
 </div>
 
-Window properties such as the start and end timestamp of a time window can be added in the select statement as a property of the window alias as `w.start` and `w.end`, respectively.
+Window properties such as the start, end, or rowtime timestamp of a time window can be added in the select statement as a property of the window alias as `w.start`, `w.end`, and `w.rowtime`, respectively. The window start and rowtime timestamps are the inclusive lower and uppper window boundaries. In contrast, the window end timestamp is the exclusive upper window boundary. For example a tumbling window of 30 minutes that starts at 2pm would have `14:00:00.000` as start timestamp, `14:29:59.999` as rowtime timestamp, and `14:30:00.000` as end timestamp.
 
 <div class="codetabs" markdown="1">
 <div data-lang="java" markdown="1">
@@ -1075,7 +1186,7 @@ Window properties such as the start and end timestamp of a time window can be ad
 Table table = input
   .window([Window w].as("w"))  // define window with alias w
   .groupBy("w, a")  // group the table by attribute a and window w 
-  .select("a, w.start, w.end, b.count"); // aggregate and add window start and end timestamps
+  .select("a, w.start, w.end, w.rowtime, b.count"); // aggregate and add window start, end, and rowtime timestamps
 {% endhighlight %}
 </div>
 
@@ -1084,7 +1195,7 @@ Table table = input
 val table = input
   .window([w: Window] as 'w)  // define window with alias w
   .groupBy('w, 'a)  // group the table by attribute a and window w 
-  .select('a, 'w.start, 'w.end, 'b.count) // aggregate and add window start and end timestamps
+  .select('a, 'w.start, 'w.end, 'w.rowtime, 'b.count) // aggregate and add window start, end, and rowtime timestamps
 {% endhighlight %}
 </div>
 </div>
@@ -1116,7 +1227,7 @@ Tumbling windows are defined by using the `Tumble` class as follows:
     </tr>
     <tr>
       <td><code>as</code></td>
-      <td>Assigns an alias to the window. The alias is used to reference the window in the following <code>groupBy()</code> clause and optionally to select window properties such as window start or end time in the <code>select()</code> clause.</td>
+      <td>Assigns an alias to the window. The alias is used to reference the window in the following <code>groupBy()</code> clause and optionally to select window properties such as window start, end, or rowtime timestamps in the <code>select()</code> clause.</td>
     </tr>
   </tbody>
 </table>
@@ -1178,7 +1289,7 @@ Sliding windows are defined by using the `Slide` class as follows:
     </tr>
     <tr>
       <td><code>as</code></td>
-      <td>Assigns an alias to the window. The alias is used to reference the window in the following <code>groupBy()</code> clause and optionally to select window properties such as window start or end time in the <code>select()</code> clause.</td>
+      <td>Assigns an alias to the window. The alias is used to reference the window in the following <code>groupBy()</code> clause and optionally to select window properties such as window start, end, or rowtime timestamps in the <code>select()</code> clause.</td>
     </tr>
   </tbody>
 </table>
@@ -1236,7 +1347,7 @@ A session window is defined by using the `Session` class as follows:
     </tr>
     <tr>
       <td><code>as</code></td>
-      <td>Assigns an alias to the window. The alias is used to reference the window in the following <code>groupBy()</code> clause and optionally to select window properties such as window start or end time in the <code>select()</code> clause.</td>
+      <td>Assigns an alias to the window. The alias is used to reference the window in the following <code>groupBy()</code> clause and optionally to select window properties such as window start, end, or rowtime timestamps in the <code>select()</code> clause.</td>
     </tr>
   </tbody>
 </table>
@@ -1336,9 +1447,14 @@ The `OverWindow` defines a range of rows over which aggregates are computed. `Ov
       <td>
         <p>Defines the window interval of rows that are included in the window and follow the current row. The interval must be specified in the same unit as the preceding interval (time or row-count).</p>
 
-        <p>At the moment, over windows with rows following the current row are not supported. All over windows must stop at the current row and only two values are supported for <code>following</code>, <code>CURRENT_RANGE</code> for a time interval and <code>CURRENT_ROW</code> for a row-count interval.</p>
+        <p>At the moment, over windows with rows following the current row are not supported. Instead you can specify one of two constants:</p>
 
-        <p>If the `following` clause is omitted, the window will end at the current row.</p>
+        <ul>
+          <li><code>CURRENT_ROW</code> sets the upper bound of the window to the current row.</li>
+          <li><code>CURRENT_RANGE</code> sets the upper bound of the window to sort key of the current row, i.e., all rows with the same sort key as the current row are included in the window.</li>
+        </ul>
+
+        <p>If the <code>following</code> clause is omitted, the upper bound of a time interval window is defined as <code>CURRENT_RANGE</code> and the upper bound of a row-count interval window is defined as <code>CURRENT_ROW</code>.</p>
       </td>
     </tr>
     <tr>
@@ -1428,7 +1544,7 @@ The `OverWindow` defines a range of rows over which aggregates are computed. `Ov
 Data Types
 ----------
 
-The Table API is built on top of Flink's DataSet and DataStream API. Internally, it also uses Flink's `TypeInformation` to distinguish between types. The Table API does not support all Flink types so far. All supported simple types are listed in `org.apache.flink.table.api.Types`. The following table summarizes the relation between Table API types, SQL types, and the resulting Java class.
+The Table API is built on top of Flink's DataSet and DataStream APIs. Internally, it also uses Flink's `TypeInformation` to define data types. Fully supported types are listed in `org.apache.flink.table.api.Types`. The following table summarizes the relation between Table API types, SQL types, and the resulting Java class.
 
 | Table API              | SQL                         | Java type              |
 | :--------------------- | :-------------------------- | :--------------------- |
@@ -1441,25 +1557,17 @@ The Table API is built on top of Flink's DataSet and DataStream API. Internally,
 | `Types.FLOAT`          | `REAL, FLOAT`               | `java.lang.Float`      |
 | `Types.DOUBLE`         | `DOUBLE`                    | `java.lang.Double`     |
 | `Types.DECIMAL`        | `DECIMAL`                   | `java.math.BigDecimal` |
-| `Types.DATE`           | `DATE`                      | `java.sql.Date`        |
-| `Types.TIME`           | `TIME`                      | `java.sql.Time`        |
-| `Types.TIMESTAMP`      | `TIMESTAMP(3)`              | `java.sql.Timestamp`   |
+| `Types.SQL_DATE`       | `DATE`                      | `java.sql.Date`        |
+| `Types.SQL_TIME`       | `TIME`                      | `java.sql.Time`        |
+| `Types.SQL_TIMESTAMP`  | `TIMESTAMP(3)`              | `java.sql.Timestamp`   |
 | `Types.INTERVAL_MONTHS`| `INTERVAL YEAR TO MONTH`    | `java.lang.Integer`    |
 | `Types.INTERVAL_MILLIS`| `INTERVAL DAY TO SECOND(3)` | `java.lang.Long`       |
 | `Types.PRIMITIVE_ARRAY`| `ARRAY`                     | e.g. `int[]`           |
 | `Types.OBJECT_ARRAY`   | `ARRAY`                     | e.g. `java.lang.Byte[]`|
 | `Types.MAP`            | `MAP`                       | `java.util.HashMap`    |
+| `Types.MULTISET`       | `MULTISET`                  | e.g. `java.util.HashMap<String, Integer>` for a multiset of `String` |
 
-
-Advanced types such as generic types, composite types (e.g. POJOs or Tuples), and array types (object or primitive arrays) can be fields of a row. 
-
-Generic types are treated as a black box within Table API and SQL yet.
-
-Composite types, however, are fully supported types where fields of a composite type can be accessed using the `.get()` operator in Table API and dot operator (e.g. `MyTable.pojoColumn.myField`) in SQL. Composite types can also be flattened using `.flatten()` in Table API or `MyTable.pojoColumn.*` in SQL.
-
-Array types can be accessed using the `myArray.at(1)` operator in Table API and `myArray[1]` operator in SQL. Array literals can be created using `array(1, 2, 3)` in Table API and `ARRAY[1, 2, 3]` in SQL.
-
-**TODO: Clean-up and move relevant parts to the "Mappings Types to Table Schema" section of the Common Concepts & API page.**
+Generic types and composite types (e.g., POJOs or Tuples) can be fields of a row as well. Generic types are treated as a black box and can be passed on or processed by [user-defined functions](udfs.html). Composite types can be accessed with [built-in functions](#built-in-functions) (see *Value access functions* section).
 
 {% top %}
 
@@ -1500,7 +1608,7 @@ rowInterval = composite , "." , "rows" ;
 
 cast = composite , ".cast(" , dataType , ")" ;
 
-dataType = "BYTE" | "SHORT" | "INT" | "LONG" | "FLOAT" | "DOUBLE" | "BOOLEAN" | "STRING" | "DECIMAL" | "SQL_DATE" | "SQL_TIME" | "SQL_TIMESTAMP" | "INTERVAL_MONTHS" | "INTERVAL_MILLIS" | ( "PRIMITIVE_ARRAY" , "(" , dataType , ")" ) | ( "OBJECT_ARRAY" , "(" , dataType , ")" ) ;
+dataType = "BYTE" | "SHORT" | "INT" | "LONG" | "FLOAT" | "DOUBLE" | "BOOLEAN" | "STRING" | "DECIMAL" | "SQL_DATE" | "SQL_TIME" | "SQL_TIMESTAMP" | "INTERVAL_MONTHS" | "INTERVAL_MILLIS" | ( "MAP" , "(" , dataType , "," , dataType , ")" ) | ( "PRIMITIVE_ARRAY" , "(" , dataType , ")" ) | ( "OBJECT_ARRAY" , "(" , dataType , ")" ) ;
 
 as = composite , ".as(" , fieldReference , ")" ;
 
@@ -1535,14 +1643,12 @@ In order to work with temporal values the Table API supports Java SQL's Date, Ti
 
 Temporal intervals can be represented as number of months (`Types.INTERVAL_MONTHS`) or number of milliseconds (`Types.INTERVAL_MILLIS`). Intervals of same type can be added or subtracted (e.g. `1.hour + 10.minutes`). Intervals of milliseconds can be added to time points (e.g. `"2016-08-10".toDate + 5.days`).
 
-**TODO: needs to be reworked, IMO. Grammar might be complete but is hard to understand without concrete examples**
-
 {% top %}
 
 Built-In Functions
 ------------------
 
-Both the Table API and SQL come with a set of built-in functions for data transformations. This section gives a brief overview of the available functions so far.
+The Table API comes with a set of built-in functions for data transformations. This section gives a brief overview of the available functions.
 
 <div class="codetabs" markdown="1">
 <div data-lang="java" markdown="1">
@@ -1664,6 +1770,28 @@ STRING.similar(STRING)
       </td>
       <td>
         <p>Returns true, if a string matches the specified SQL regex pattern. E.g. "A+" matches all strings that consist of at least one "A".</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight java %}
+ANY.in(ANY, ANY, ...)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns true if an expression exists in a given list of expressions. This is a shorthand for multiple OR conditions. If the testing set contains null, the result will be null if the element can not be found and true if it can be found. If element is null, the result is always null. E.g. "42.in(1, 2, 3)" leads to false.</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight java %}
+ANY.in(TABLE)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns true if an expression exists in a given table sub-query. The sub-query table must consist of one column. This column must have the same data type as the expression. Note: This operation is not supported in a streaming environment yet.</p>
       </td>
     </tr>
 
@@ -1902,6 +2030,19 @@ NUMERIC.log10()
         <p>Calculates the base 10 logarithm of given value.</p>
       </td>
     </tr>
+    
+    <tr>
+      <td>
+        {% highlight java %}
+numeric1.log()
+numeric1.log(numeric2)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Calculates the logarithm of a given numeric value.</p>
+        <p>If called without a parameter, this function returns the natural logarithm of <code>numeric1</code>. If called with a parameter <code>numeric2</code>, this function returns the logarithm of <code>numeric1</code> to the base <code>numeric2</code>. <code>numeric1</code> must be greater than 0. <code>numeric2</code> must be greater than 1.</p>
+      </td>
+    </tr>
 
     <tr>
       <td>
@@ -2067,6 +2208,72 @@ pi()
         <p>Returns a value that is closer than any other value to pi.</p>
       </td>
     </tr>
+
+    <tr>
+      <td>
+        {% highlight java %}
+e()
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns a value that is closer than any other value to e.</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight java %}
+rand()
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns a pseudorandom double value between 0.0 (inclusive) and 1.0 (exclusive).</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight java %}
+rand(seed integer)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns a pseudorandom double value between 0.0 (inclusive) and 1.0 (exclusive) with a initial seed. Two rand functions will return identical sequences of numbers if they have same initial seed.</p>
+      </td>
+    </tr>
+
+    <tr>
+     <td>
+       {% highlight java %}
+randInteger(bound integer)
+{% endhighlight %}
+     </td>
+    <td>
+      <p>Returns a pseudorandom integer value between 0.0 (inclusive) and the specified value (exclusive).</p>
+    </td>
+   </tr>
+
+    <tr>
+     <td>
+       {% highlight java %}
+randInteger(seed integer, bound integer)
+{% endhighlight %}
+     </td>
+    <td>
+      <p>Returns a pseudorandom integer value between 0.0 (inclusive) and the specified value (exclusive) with a initial seed. Two randInteger functions will return identical sequences of numbers if they have same initial seed and same bound.</p>
+    </td>
+   </tr>
+
+    <tr>
+     <td>
+       {% highlight java %}
+NUMERIC.bin()
+{% endhighlight %}
+     </td>
+    <td>
+      <p>Returns a string representation of an integer numeric value in binary format. Returns null if <i>numeric</i> is null. E.g. "4" leads to "100", "12" leads to "1100".</p>
+    </td>
+   </tr>
     
   </tbody>
 </table>
@@ -2197,6 +2404,52 @@ STRING.initCap()
       </td>
     </tr>
 
+    <tr>
+      <td>
+        {% highlight java %}
+STRING.lpad(len INT, pad STRING)
+{% endhighlight %}
+      </td>
+
+      <td>
+        <p>Returns a string left-padded with the given pad string to a length of len characters. If the string is longer than len, the return value is shortened to len characters. E.g. "hi".lpad(4, '??') returns "??hi",  "hi".lpad(1, '??') returns "h".</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight java %}
+STRING.rpad(len INT, pad STRING)
+{% endhighlight %}
+      </td>
+
+      <td>
+        <p>Returns a string right-padded with the given pad string to a length of len characters. If the string is longer than len, the return value is shortened to len characters. E.g. "hi".rpad(4, '??') returns "hi??",  "hi".rpad(1, '??') returns "h".</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight text %}
+concat(string1, string2,...)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the string that results from concatenating the arguments. Returns NULL if any argument is NULL. E.g. <code>concat("AA", "BB", "CC")</code> returns <code>AABBCC</code>.</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight text %}
+concat_ws(separator, string1, string2,...)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the string that results from concatenating the arguments using a separator. The separator is added between the strings to be concatenated. Returns NULL If the separator is NULL. concat_ws() does not skip empty strings. However, it does skip any NULL argument. E.g. <code>concat_ws("~", "AA", "BB", "", "CC")</code> returns <code>AA~BB~~CC</code></p>
+      </td>
+    </tr>
+
   </tbody>
 </table>
 
@@ -2257,28 +2510,6 @@ ANY.cast(TYPE)
   </thead>
   
   <tbody>
-
-    <tr>
-      <td>
-        {% highlight java %}
-ARRAY.at(INT)
-{% endhighlight %}
-      </td>
-      <td>
-        <p>Returns the element at a particular position in an array. The index starts at 1.</p>
-      </td>
-    </tr>
-
-    <tr>
-      <td>
-        {% highlight java %}
-array(ANY [, ANY ]*)
-{% endhighlight %}
-      </td>
-      <td>
-        <p>Creates an array from a list of values. The array will be an array of objects (not primitives).</p>
-      </td>
-    </tr>
 
     <tr>
       <td>
@@ -2531,6 +2762,18 @@ temporalOverlaps(TIMEPOINT, TEMPORAL, TIMEPOINT, TEMPORAL)
       </td>
     </tr>
 
+    <tr>
+      <td>
+        {% highlight java %}
+dateFormat(TIMESTAMP, STRING)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Formats <code>timestamp</code> as a string using a specified <code>format</code>. The format must be compatible with MySQL's date formatting syntax as used by the <code>date_parse</code> function. The format specification is given in the <a href="sql.html#date-format-specifier">Date Format Specifier table</a> below.</p>
+        <p>For example <code>dateFormat(ts, '%Y, %d %M')</code> results in strings formatted as <code>"2017, 05 May"</code>.</p>
+      </td>
+    </tr>
+
     </tbody>
 </table>
 
@@ -2655,6 +2898,17 @@ FIELD.varSamp
       </td>
     </tr>
 
+    <tr>
+      <td>
+        {% highlight java %}
+FIELD.collect
+        {% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the multiset aggregate of the input value.</p>
+      </td>
+    </tr>
+
     </tbody>
 </table>
 
@@ -2707,6 +2961,17 @@ ANY.flatten()
     <tr>
       <td>
         {% highlight java %}
+array(ANY [, ANY ]*)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Creates an array from a list of values. The array will be an array of objects (not primitives).</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight java %}
 ARRAY.cardinality()
 {% endhighlight %}
       </td>
@@ -2718,11 +2983,138 @@ ARRAY.cardinality()
     <tr>
       <td>
         {% highlight java %}
+ARRAY.at(INT)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the element at a particular position in an array. The index starts at 1.</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight java %}
 ARRAY.element()
 {% endhighlight %}
       </td>
       <td>
         <p>Returns the sole element of an array with a single element. Returns <code>null</code> if the array is empty. Throws an exception if the array has more than one element.</p>
+      </td>
+    </tr>
+
+  </tbody>
+</table>
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 40%">Map functions</th>
+      <th class="text-center">Description</th>
+    </tr>
+  </thead>
+
+  <tbody>
+
+    <tr>
+      <td>
+        {% highlight java %}
+map(ANY, ANY [, ANY, ANY ]*)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Creates a map from a list of key-value pairs.</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight java %}
+MAP.cardinality()
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the number of entries of a map.</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight java %}
+MAP.at(ANY)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the value specified by a particular key in a map.</p>
+      </td>
+    </tr>
+
+  </tbody>
+</table>
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 40%">Hash functions</th>
+      <th class="text-center">Description</th>
+    </tr>
+  </thead>
+  
+  <tbody>
+
+    <tr>
+      <td>
+        {% highlight java %}
+STRING.md5()
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the MD5 hash of the string argument as a string of 32 hexadecimal digits; null if <i>string</i> is null.</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight java %}
+STRING.sha1()
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the SHA-1 hash of the string argument as a string of 40 hexadecimal digits; null if <i>string</i> is null.</p>
+      </td>
+    </tr>
+
+        <tr>
+      <td>
+        {% highlight java %}
+STRING.sha256()
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the SHA-256 hash of the string argument as a string of 64 hexadecimal digits; null if <i>string</i> is null.</p>
+      </td>
+    </tr>
+
+    </tbody>
+</table>
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 40%">Row functions</th>
+      <th class="text-center">Description</th>
+    </tr>
+  </thead>
+
+  <tbody>
+
+    <tr>
+      <td>
+        {% highlight java %}
+row(ANY, [, ANY]*)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Creates a row from a list of values. Row is composite type and can be access via <a href="tableApi.html#built-in-functions">value access functions</a>.</p>
       </td>
     </tr>
 
@@ -2873,6 +3265,28 @@ STRING.similar(STRING)
       </td>
       <td>
         <p>Returns true, if a string matches the specified SQL regex pattern. E.g. "A+" matches all strings that consist of at least one "A".</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight scala %}
+ANY.in(ANY, ANY, ...)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns true if an expression exists in a given list of expressions. This is a shorthand for multiple OR conditions. If the testing set contains null, the result will be null if the element can not be found and true if it can be found. If element is null, the result is always null. E.g. "42".in(1, 2, 3) leads to false.</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight scala %}
+ANY.in(TABLE)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns true if an expression exists in a given table sub-query. The sub-query table must consist of one column. This column must have the same data type as the expression. Note: This operation is not supported in a streaming environment yet.</p>
       </td>
     </tr>
 
@@ -3114,6 +3528,19 @@ NUMERIC.log10()
     <tr>
       <td>
         {% highlight scala %}
+numeric1.log()
+numeric1.log(numeric2)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Calculates the logarithm of a given numeric value.</p>
+        <p>If called without a parameter, this function returns the natural logarithm of <code>numeric1</code>. If called with a parameter <code>numeric2</code>, this function returns the logarithm of <code>numeric1</code> to the base <code>numeric2</code>. <code>numeric1</code> must be greater than 0. <code>numeric2</code> must be greater than 1.</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight scala %}
 NUMERIC.exp()
 {% endhighlight %}
       </td>
@@ -3275,6 +3702,72 @@ pi()
         <p>Returns a value that is closer than any other value to pi.</p>
       </td>
     </tr>
+
+    <tr>
+      <td>
+        {% highlight scala %}
+e()
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns a value that is closer than any other value to e.</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight scala %}
+rand()
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns a pseudorandom double value between 0.0 (inclusive) and 1.0 (exclusive).</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight scala %}
+rand(seed integer)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns a pseudorandom double value between 0.0 (inclusive) and 1.0 (exclusive) with a initial seed. Two rand functions will return identical sequences of numbers if they have same initial seed.</p>
+      </td>
+    </tr>
+
+    <tr>
+     <td>
+       {% highlight scala %}
+randInteger(bound integer)
+{% endhighlight %}
+     </td>
+    <td>
+      <p>Returns a pseudorandom integer value between 0.0 (inclusive) and the specified value (exclusive).</p>
+    </td>
+   </tr>
+
+    <tr>
+     <td>
+       {% highlight scala %}
+randInteger(seed integer, bound integer)
+{% endhighlight %}
+     </td>
+    <td>
+      <p>Returns a pseudorandom integer value between 0.0 (inclusive) and the specified value (exclusive) with a initial seed. Two randInteger functions will return identical sequences of numbers if they have same initial seed and same bound.</p>
+    </td>
+   </tr>
+
+    <tr>
+     <td>
+       {% highlight scala %}
+NUMERIC.bin()
+{% endhighlight %}
+     </td>
+    <td>
+      <p>Returns a string representation of an integer numeric value in binary format. Returns null if <i>numeric</i> is null. E.g. "4" leads to "100", "12" leads to "1100".</p>
+    </td>
+   </tr>
 
   </tbody>
 </table>
@@ -3464,28 +3957,6 @@ ANY.cast(TYPE)
   </thead>
 
   <tbody>
-
-    <tr>
-      <td>
-        {% highlight scala %}
-ARRAY.at(INT)
-{% endhighlight %}
-      </td>
-      <td>
-        <p>Returns the element at a particular position in an array. The index starts at 1.</p>
-      </td>
-    </tr>
-
-    <tr>
-      <td>
-        {% highlight scala %}
-array(ANY [, ANY ]*)
-{% endhighlight %}
-      </td>
-      <td>
-        <p>Creates an array from a list of values. The array will be an array of objects (not primitives).</p>
-      </td>
-    </tr>
 
     <tr>
       <td>
@@ -3860,6 +4331,17 @@ FIELD.varSamp
         <p>Returns the sample variance (square of the sample standard deviation) of the numeric field across all input values.</p>
       </td>
     </tr>
+
+    <tr>
+      <td>
+        {% highlight scala %}
+FIELD.collect
+        {% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the multiset aggregate of the input value.</p>
+      </td>
+    </tr>
   </tbody>
 </table>
 
@@ -3896,6 +4378,18 @@ ANY.flatten()
       </td>
     </tr>
 
+    <tr>
+      <td>
+        {% highlight scala %}
+dateFormat(TIMESTAMP, STRING)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Formats <code>timestamp</code> as a string using a specified <code>format</code>. The format must be compatible with MySQL's date formatting syntax as used by the <code>date_parse</code> function. The format specification is given in the <a href="sql.html#date-format-specifier">Date Format Specifier table</a> below.</p>
+        <p>For example <code>dateFormat('ts, "%Y, %d %M")</code> results in strings formatted as <code>"2017, 05 May"</code>.</p>
+      </td>
+    </tr>
+
   </tbody>
 </table>
 
@@ -3912,11 +4406,33 @@ ANY.flatten()
     <tr>
       <td>
         {% highlight scala %}
+array(ANY [, ANY ]*)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Creates an array from a list of values. The array will be an array of objects (not primitives).</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight scala %}
 ARRAY.cardinality()
 {% endhighlight %}
       </td>
       <td>
         <p>Returns the number of elements of an array.</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight scala %}
+ARRAY.at(INT)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the element at a particular position in an array. The index starts at 1.</p>
       </td>
     </tr>
 
@@ -3934,7 +4450,122 @@ ARRAY.element()
   </tbody>
 </table>
 
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 40%">Map functions</th>
+      <th class="text-center">Description</th>
+    </tr>
+  </thead>
 
+  <tbody>
+
+    <tr>
+      <td>
+        {% highlight scala %}
+map(ANY, ANY [, ANY, ANY ]*)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Creates a map from a list of key-value pairs.</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight scala %}
+MAP.cardinality()
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the number of entries of a map.</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight scala %}
+MAP.at(ANY)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the value specified by a particular key in a map.</p>
+      </td>
+    </tr>
+
+  </tbody>
+</table>
+
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 40%">Hash functions</th>
+      <th class="text-center">Description</th>
+    </tr>
+  </thead>
+  
+  <tbody>
+
+    <tr>
+      <td>
+        {% highlight scala %}
+STRING.md5()
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the MD5 hash of the string argument as a string of 32 hexadecimal digits; null if <i>string</i> is null.</p>
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        {% highlight scala %}
+STRING.sha1()
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the SHA-1 hash of the string argument as a string of 40 hexadecimal digits; null if <i>string</i> is null.</p>
+      </td>
+    </tr>
+
+        <tr>
+      <td>
+        {% highlight scala %}
+STRING.sha256()
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Returns the SHA-256 hash of the string argument as a string of 64 hexadecimal digits; null if <i>string</i> is null.</p>
+      </td>
+    </tr>
+
+    </tbody>
+</table>
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th class="text-left" style="width: 40%">Row functions</th>
+      <th class="text-center">Description</th>
+    </tr>
+  </thead>
+
+  <tbody>
+
+    <tr>
+      <td>
+        {% highlight scala %}
+row(ANY, [, ANY]*)
+{% endhighlight %}
+      </td>
+      <td>
+        <p>Creates a row from a list of values. Row is composite type and can be access via <a href="tableApi.html#built-in-functions">value access functions</a>.</p>
+      </td>
+    </tr>
+
+  </tbody>
+</table>
 
 <table class="table table-bordered">
   <thead>
@@ -3968,7 +4599,6 @@ The following operations are not supported yet:
 
 - Binary string operators and functions
 - System functions
-- Collection functions
 - Aggregate functions like REGR_xxx
 - Distinct aggregate functions like COUNT DISTINCT
 

@@ -19,13 +19,12 @@
 package org.apache.flink.runtime.io.network.buffer;
 
 import org.apache.flink.core.memory.MemorySegment;
-import org.apache.flink.runtime.util.event.EventListener;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
-import java.util.Queue;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -34,14 +33,14 @@ import static org.apache.flink.util.Preconditions.checkState;
 /**
  * A buffer pool used to manage a number of {@link Buffer} instances from the
  * {@link NetworkBufferPool}.
- * <p>
- * Buffer requests are mediated to the network buffer pool to ensure dead-lock
+ *
+ * <p>Buffer requests are mediated to the network buffer pool to ensure dead-lock
  * free operation of the network stack by limiting the number of buffers per
  * local buffer pool. It also implements the default mechanism for buffer
  * recycling, which ensures that every buffer is ultimately returned to the
  * network buffer pool.
  *
- * <p> The size of this pool can be dynamically changed at runtime ({@link #setNumBuffers(int)}. It
+ * <p>The size of this pool can be dynamically changed at runtime ({@link #setNumBuffers(int)}. It
  * will then lazily return the required number of buffers to the {@link NetworkBufferPool} to
  * match its new size.
  */
@@ -51,7 +50,7 @@ class LocalBufferPool implements BufferPool {
 	/** Global network buffer pool to get buffers from. */
 	private final NetworkBufferPool networkBufferPool;
 
-	/** The minimum number of required segments for this pool */
+	/** The minimum number of required segments for this pool. */
 	private final int numberOfRequiredMemorySegments;
 
 	/**
@@ -64,12 +63,12 @@ class LocalBufferPool implements BufferPool {
 	 * Buffer availability listeners, which need to be notified when a Buffer becomes available.
 	 * Listeners can only be registered at a time/state where no Buffer instance was available.
 	 */
-	private final Queue<EventListener<Buffer>> registeredListeners = new ArrayDeque<EventListener<Buffer>>();
+	private final ArrayDeque<BufferListener> registeredListeners = new ArrayDeque<>();
 
 	/** Maximum number of network buffers to allocate. */
 	private final int maxNumberOfMemorySegments;
 
-	/** The current size of this pool */
+	/** The current size of this pool. */
 	private int currentPoolSize;
 
 	/**
@@ -181,7 +180,7 @@ class LocalBufferPool implements BufferPool {
 	@Override
 	public Buffer requestBuffer() throws IOException {
 		try {
-			return requestBuffer(false);
+			return toBuffer(requestMemorySegment(false));
 		}
 		catch (InterruptedException e) {
 			throw new IOException(e);
@@ -190,10 +189,29 @@ class LocalBufferPool implements BufferPool {
 
 	@Override
 	public Buffer requestBufferBlocking() throws IOException, InterruptedException {
-		return requestBuffer(true);
+		return toBuffer(requestMemorySegment(true));
 	}
 
-	private Buffer requestBuffer(boolean isBlocking) throws InterruptedException, IOException {
+	@Override
+	public BufferBuilder requestBufferBuilderBlocking() throws IOException, InterruptedException {
+		return toBufferBuilder(requestMemorySegment(true));
+	}
+
+	private Buffer toBuffer(MemorySegment memorySegment) {
+		if (memorySegment == null) {
+			return null;
+		}
+		return new NetworkBuffer(memorySegment, this);
+	}
+
+	private BufferBuilder toBufferBuilder(MemorySegment memorySegment) {
+		if (memorySegment == null) {
+			return null;
+		}
+		return new BufferBuilder(memorySegment, this);
+	}
+
+	private MemorySegment requestMemorySegment(boolean isBlocking) throws InterruptedException, IOException {
 		synchronized (availableMemorySegments) {
 			returnExcessMemorySegments();
 
@@ -210,9 +228,7 @@ class LocalBufferPool implements BufferPool {
 
 					if (segment != null) {
 						numberOfRequestedMemorySegments++;
-						availableMemorySegments.add(segment);
-
-						continue;
+						return segment;
 					}
 				}
 
@@ -228,7 +244,7 @@ class LocalBufferPool implements BufferPool {
 				}
 			}
 
-			return new Buffer(availableMemorySegments.poll(), this);
+			return availableMemorySegments.poll();
 		}
 	}
 
@@ -239,7 +255,7 @@ class LocalBufferPool implements BufferPool {
 				returnMemorySegment(segment);
 			}
 			else {
-				EventListener<Buffer> listener = registeredListeners.poll();
+				BufferListener listener = registeredListeners.poll();
 
 				if (listener == null) {
 					availableMemorySegments.add(segment);
@@ -247,7 +263,10 @@ class LocalBufferPool implements BufferPool {
 				}
 				else {
 					try {
-						listener.onEvent(new Buffer(segment, this));
+						boolean needMoreBuffers = listener.notifyBufferAvailable(new NetworkBuffer(segment, this));
+						if (needMoreBuffers) {
+							registeredListeners.add(listener);
+						}
 					}
 					catch (Throwable ignored) {
 						availableMemorySegments.add(segment);
@@ -270,9 +289,9 @@ class LocalBufferPool implements BufferPool {
 					returnMemorySegment(segment);
 				}
 
-				EventListener<Buffer> listener;
+				BufferListener listener;
 				while ((listener = registeredListeners.poll()) != null) {
-					listener.onEvent(null);
+					listener.notifyBufferDestroyed();
 				}
 
 				isDestroyed = true;
@@ -283,7 +302,7 @@ class LocalBufferPool implements BufferPool {
 	}
 
 	@Override
-	public boolean addListener(EventListener<Buffer> listener) {
+	public boolean addBufferListener(BufferListener listener) {
 		synchronized (availableMemorySegments) {
 			if (!availableMemorySegments.isEmpty() || isDestroyed) {
 				return false;

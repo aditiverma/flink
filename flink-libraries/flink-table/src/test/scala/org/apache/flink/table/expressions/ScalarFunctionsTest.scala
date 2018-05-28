@@ -18,17 +18,12 @@
 
 package org.apache.flink.table.expressions
 
-import java.sql.{Date, Time, Timestamp}
-
-import org.apache.flink.api.common.typeinfo.TypeInformation
-import org.apache.flink.api.java.typeutils.RowTypeInfo
+import org.apache.flink.table.api.Types
 import org.apache.flink.table.api.scala._
-import org.apache.flink.table.api.{Types, ValidationException}
-import org.apache.flink.table.expressions.utils.ExpressionTestBase
-import org.apache.flink.types.Row
+import org.apache.flink.table.expressions.utils.ScalarTypesTestBase
 import org.junit.Test
 
-class ScalarFunctionsTest extends ExpressionTestBase {
+class ScalarFunctionsTest extends ScalarTypesTestBase {
 
   // ----------------------------------------------------------------------------------------------
   // String functions
@@ -97,18 +92,6 @@ class ScalarFunctionsTest extends ExpressionTestBase {
     testSqlApi(
       "SUBSTRING(f0 FROM 2)",
       "his is a test String.")
-  }
-
-  @Test(expected = classOf[ValidationException])
-  def testInvalidSubstring1(): Unit = {
-    // Must fail. Parameter of substring must be an Integer not a Double.
-    testTableApi("test".substring(2.0.toExpr), "FAIL", "FAIL")
-  }
-
-  @Test(expected = classOf[ValidationException])
-  def testInvalidSubstring2(): Unit = {
-    // Must fail. Parameter of substring must be an Integer not a String.
-    testTableApi("test".substring("test".toExpr), "FAIL", "FAIL")
   }
 
   @Test
@@ -325,6 +308,146 @@ class ScalarFunctionsTest extends ExpressionTestBase {
       "false")
   }
 
+  @Test
+  def testMultiConcat(): Unit = {
+    testAllApis(concat("xx", 'f33), "concat('xx', f33)", "CONCAT('xx', f33)", "null")
+    testAllApis(
+      concat("AA", "BB", "CC", "---"),
+      "concat('AA','BB','CC','---')",
+      "CONCAT('AA','BB','CC','---')",
+      "AABBCC---")
+    testAllApis(
+      concat("x~x", "b~b", "c~~~~c", "---"),
+      "concat('x~x','b~b','c~~~~c','---')",
+      "CONCAT('x~x','b~b','c~~~~c','---')",
+      "x~xb~bc~~~~c---")
+  }
+
+  @Test
+  def testConcatWs(): Unit = {
+    testAllApis(
+      concat_ws('f33, "AA"),
+      "concat_ws(f33, 'AA')",
+      "CONCAT_WS(f33, 'AA')",
+      "null")
+    testAllApis(
+      concat_ws("~~~~", "AA"),
+      "concat_ws('~~~~','AA')",
+      "concat_ws('~~~~','AA')",
+      "AA")
+    testAllApis(
+      concat_ws("~", "AA", "BB"),
+      "concat_ws('~','AA','BB')",
+      "concat_ws('~','AA','BB')",
+      "AA~BB")
+    testAllApis(
+      concat_ws("~", 'f33, "AA", "BB", "", 'f33, "CC"),
+      "concat_ws('~',f33, 'AA','BB','',f33, 'CC')",
+      "concat_ws('~',f33, 'AA','BB','',f33, 'CC')",
+      "AA~BB~~CC")
+    testAllApis(
+      concat_ws("~~~~", "Flink", 'f33, "xx", 'f33, 'f33),
+      "concat_ws('~~~~','Flink', f33, 'xx', f33, f33)",
+      "CONCAT_WS('~~~~','Flink', f33, 'xx', f33, f33)",
+      "Flink~~~~xx")
+  }
+
+  @Test
+  def testLPad(): Unit = {
+    testSqlApi("LPAD('hi',4,'??')", "??hi")
+    testSqlApi("LPAD('hi',1,'??')", "h")
+    testSqlApi("LPAD('',1,'??')", "?")
+    testSqlApi("LPAD('',30,'??')", "??????????????????????????????")
+    testSqlApi("LPAD('111',-2,'??')", "null")
+    testSqlApi("LPAD(f33,1,'??')", "null")
+    testSqlApi("LPAD('\u0061\u0062',1,'??')", "a") // the unicode of ab is \u0061\u0062
+    testSqlApi("LPAD('⎨⎨',1,'??')", "⎨")
+    testSqlApi("LPAD('äääääääää',2,'??')", "ää")
+    testSqlApi("LPAD('äääääääää',10,'??')", "?äääääääää")
+
+    testAllApis(
+      "äää".lpad(13, "12345"),
+      "'äää'.lpad(13, '12345')",
+      "LPAD('äää',13,'12345')",
+      "1234512345äää")
+  }
+
+  @Test
+  def testRPad(): Unit = {
+    testSqlApi("RPAD('hi',4,'??')", "hi??")
+    testSqlApi("RPAD('hi',1,'??')", "h")
+    testSqlApi("RPAD('',1,'??')", "?")
+    testSqlApi("RPAD('1',30,'??')", "1?????????????????????????????")
+    testSqlApi("RPAD('111',-2,'??')", "null")
+    testSqlApi("RPAD(f33,1,'??')", "null")
+    testSqlApi("RPAD('\u0061\u0062',1,'??')", "a") // the unicode of ab is \u0061\u0062
+    testSqlApi("RPAD('üö',1,'??')", "ü")
+
+    testAllApis(
+      "äää".rpad(13, "12345"),
+      "'äää'.rpad(13, '12345')",
+      "RPAD('äää',13,'12345')",
+      "äää1234512345")
+  }
+
+  @Test
+  def testBin(): Unit = {
+
+    testAllApis(
+      Null(Types.BYTE).bin(),
+      "bin(Null(BYTE))",
+      "BIN((CAST(NULL AS TINYINT)))",
+      "null")
+
+    testAllApis(
+      'f2.bin(),
+      "f2.bin()",
+      "BIN(f2)",
+      "101010")
+
+    testAllApis(
+      'f3.bin(),
+      "f3.bin()",
+      "BIN(f3)",
+      "101011")
+
+    testAllApis(
+      'f4.bin(),
+      "f4.bin()",
+      "BIN(f4)",
+      "101100")
+
+    testAllApis(
+      'f7.bin(),
+      "f7.bin()",
+      "BIN(f7)",
+      "11")
+
+    testAllApis(
+      12.bin(),
+      "12.bin()",
+      "BIN(12)",
+      "1100")
+
+    testAllApis(
+      10.bin(),
+      "10.bin()",
+      "BIN(10)",
+      "1010")
+
+    testAllApis(
+      0.bin(),
+      "0.bin()",
+      "BIN(0)",
+      "0")
+
+    testAllApis(
+      'f32.bin(),
+      "f32.bin()",
+      "BIN(f32)",
+      "1111111111111111111111111111111111111111111111111111111111111111")
+  }
+
   // ----------------------------------------------------------------------------------------------
   // Math functions
   // ----------------------------------------------------------------------------------------------
@@ -348,7 +471,6 @@ class ScalarFunctionsTest extends ExpressionTestBase {
       "mod(44, 3)",
       "MOD(44, 3)",
       "2")
-
   }
 
   @Test
@@ -1116,6 +1238,102 @@ class ScalarFunctionsTest extends ExpressionTestBase {
       math.Pi.toString)
   }
 
+  @Test
+  def testRandAndRandInteger(): Unit = {
+    val random1 = new java.util.Random(1)
+    testAllApis(
+      rand(1),
+      "rand(1)",
+      "RAND(1)",
+      random1.nextDouble().toString)
+
+    val random2 = new java.util.Random(3)
+    testAllApis(
+      rand('f7),
+      "rand(f7)",
+      "RAND(f7)",
+      random2.nextDouble().toString)
+
+    val random3 = new java.util.Random(1)
+    testAllApis(
+      randInteger(1, 10),
+      "randInteger(1, 10)",
+      "RAND_INTEGER(1, 10)",
+      random3.nextInt(10).toString)
+
+    val random4 = new java.util.Random(3)
+    testAllApis(
+      randInteger('f7, 'f4.cast(Types.INT)),
+      "randInteger(f7, f4.cast(INT))",
+      "RAND_INTEGER(f7, CAST(f4 AS INT))",
+      random4.nextInt(44).toString)
+  }
+
+  @Test
+  def testE(): Unit = {
+    testAllApis(
+      e(),
+      "E()",
+      "E()",
+      math.E.toString)
+
+    testAllApis(
+      e(),
+      "e()",
+      "e()",
+      math.E.toString)
+  }
+
+  @Test
+  def testLog(): Unit = {
+    testAllApis(
+      'f6.log(),
+      "f6.log",
+      "LOG(f6)",
+      "1.5260563034950492"
+    )
+
+    testTableApi(
+      Log('f6),
+      "Log(f6)",
+      "1.5260563034950492"
+    )
+
+    testAllApis(
+      ('f6 - 'f6 + 100).log('f6 - 'f6 + 10),
+      "(f6 - f6 + 100).log(f6 - f6 + 10)",
+      "LOG(f6 - f6 + 10, f6 - f6 + 100)",
+      "2.0"
+    )
+
+    testAllApis(
+      ('f6 + 20).log(),
+      "(f6+20).log",
+      "LOG(f6+20)",
+      "3.202746442938317"
+    )
+
+    testAllApis(
+      10.log(),
+      "10.log",
+      "LOG(10)",
+      "2.302585092994046"
+    )
+
+    testAllApis(
+      100.log(10),
+      "100.log(10)",
+      "LOG(10, 100)",
+      "2.0"
+    )
+
+    testTableApi(
+      Log(10, 100),
+      "Log(10, 100)",
+      "2.0"
+    )
+  }
+
   // ----------------------------------------------------------------------------------------------
   // Temporal functions
   // ----------------------------------------------------------------------------------------------
@@ -1229,6 +1447,47 @@ class ScalarFunctionsTest extends ExpressionTestBase {
       "f20.extract(YEAR)",
       "EXTRACT(YEAR FROM f20)",
       "2")
+
+    // test SQL only time units
+    testSqlApi(
+      "EXTRACT(MILLENNIUM FROM f18)",
+      "2")
+
+    testSqlApi(
+      "EXTRACT(MILLENNIUM FROM f16)",
+      "2")
+
+    testSqlApi(
+      "EXTRACT(CENTURY FROM f18)",
+      "20")
+
+    testSqlApi(
+      "EXTRACT(CENTURY FROM f16)",
+      "20")
+
+    testSqlApi(
+      "EXTRACT(DOY FROM f18)",
+      "315")
+
+    testSqlApi(
+      "EXTRACT(DOY FROM f16)",
+      "315")
+
+    testSqlApi(
+      "EXTRACT(QUARTER FROM f18)",
+      "4")
+
+    testSqlApi(
+      "EXTRACT(QUARTER FROM f16)",
+      "4")
+
+    testSqlApi(
+      "EXTRACT(WEEK FROM f18)",
+      "45")
+
+    testSqlApi(
+      "EXTRACT(WEEK FROM f16)",
+      "45")
   }
 
   @Test
@@ -1432,7 +1691,7 @@ class ScalarFunctionsTest extends ExpressionTestBase {
         "'2011-03-10 05:02:02'.toTimestamp, '2011-03-10 05:02:01'.toTimestamp)",
       "(TIMESTAMP '2011-03-10 05:02:02', INTERVAL '0' SECOND) OVERLAPS " +
         "(TIMESTAMP '2011-03-10 05:02:02', TIMESTAMP '2011-03-10 05:02:01')",
-      "false")
+      "true")
 
     testAllApis(
       temporalOverlaps("2011-03-10 02:02:02.001".toTimestamp, 0.milli,
@@ -1463,6 +1722,162 @@ class ScalarFunctionsTest extends ExpressionTestBase {
       "'1997-12-31'.toDate.quarter()",
       "QUARTER(DATE '1997-12-31')",
       "4")
+  }
+
+  @Test
+  def testTimestampAdd(): Unit = {
+    val data = Seq(
+      (1, "TIMESTAMP '2017-11-29 22:58:58.998'"),
+      (3, "TIMESTAMP '2017-11-29 22:58:58.998'"),
+      (-1, "TIMESTAMP '2017-11-29 22:58:58.998'"),
+      (-61, "TIMESTAMP '2017-11-29 22:58:58.998'"),
+      (-1000, "TIMESTAMP '2017-11-29 22:58:58.998'")
+    )
+
+    val YEAR = Seq(
+      "2018-11-29 22:58:58.998",
+      "2020-11-29 22:58:58.998",
+      "2016-11-29 22:58:58.998",
+      "1956-11-29 22:58:58.998",
+      "1017-11-29 22:58:58.998")
+
+    val QUARTER = Seq(
+      "2018-03-01 22:58:58.998",
+      "2018-08-31 22:58:58.998",
+      "2017-08-29 22:58:58.998",
+      "2002-08-29 22:58:58.998",
+      "1767-11-29 22:58:58.998")
+
+    val MONTH = Seq(
+      "2017-12-29 22:58:58.998",
+      "2018-03-01 22:58:58.998",
+      "2017-10-29 22:58:58.998",
+      "2012-10-29 22:58:58.998",
+      "1934-07-29 22:58:58.998")
+
+    val WEEK = Seq(
+      "2017-12-06 22:58:58.998",
+      "2017-12-20 22:58:58.998",
+      "2017-11-22 22:58:58.998",
+      "2016-09-28 22:58:58.998",
+      "1998-09-30 22:58:58.998")
+
+    val DAY = Seq(
+      "2017-11-30 22:58:58.998",
+      "2017-12-02 22:58:58.998",
+      "2017-11-28 22:58:58.998",
+      "2017-09-29 22:58:58.998",
+      "2015-03-05 22:58:58.998")
+
+    val HOUR = Seq(
+      "2017-11-29 23:58:58.998",
+      "2017-11-30 01:58:58.998",
+      "2017-11-29 21:58:58.998",
+      "2017-11-27 09:58:58.998",
+      "2017-10-19 06:58:58.998")
+
+    val MINUTE = Seq(
+      "2017-11-29 22:59:58.998",
+      "2017-11-29 23:01:58.998",
+      "2017-11-29 22:57:58.998",
+      "2017-11-29 21:57:58.998",
+      "2017-11-29 06:18:58.998")
+
+    val SECOND = Seq(
+      "2017-11-29 22:58:59.998",
+      "2017-11-29 22:59:01.998",
+      "2017-11-29 22:58:57.998",
+      "2017-11-29 22:57:57.998",
+      "2017-11-29 22:42:18.998")
+
+    // we do not supported FRAC_SECOND, MICROSECOND, SQL_TSI_FRAC_SECOND, SQL_TSI_MICROSECOND
+    val intervalMapResults = Map(
+      "YEAR" -> YEAR,
+      "SQL_TSI_YEAR" -> YEAR,
+      "QUARTER" -> QUARTER,
+      "SQL_TSI_QUARTER" -> QUARTER,
+      "MONTH" -> MONTH,
+      "SQL_TSI_MONTH" -> MONTH,
+      "WEEK" -> WEEK,
+      "SQL_TSI_WEEK" -> WEEK,
+      "DAY" -> DAY,
+      "SQL_TSI_DAY" -> DAY,
+      "HOUR" -> HOUR,
+      "SQL_TSI_HOUR" -> HOUR,
+      "MINUTE" -> MINUTE,
+      "SQL_TSI_MINUTE" -> MINUTE,
+      "SECOND" -> SECOND,
+      "SQL_TSI_SECOND" -> SECOND
+    )
+
+    for ((interval, result) <- intervalMapResults) {
+      testSqlApi(
+        s"TIMESTAMPADD($interval, ${data.head._1}, ${data.head._2})", result.head)
+      testSqlApi(
+        s"TIMESTAMPADD($interval, ${data(1)._1}, ${data(1)._2})", result(1))
+      testSqlApi(
+        s"TIMESTAMPADD($interval, ${data(2)._1}, ${data(2)._2})", result(2))
+      testSqlApi(
+        s"TIMESTAMPADD($interval, ${data(3)._1}, ${data(3)._2})", result(3))
+      testSqlApi(
+        s"TIMESTAMPADD($interval, ${data(4)._1}, ${data(4)._2})", result(4))
+    }
+
+    testSqlApi("TIMESTAMPADD(HOUR, CAST(NULL AS INTEGER), TIMESTAMP '2016-02-24 12:42:25')", "null")
+
+    testSqlApi("TIMESTAMPADD(HOUR, -200, CAST(NULL AS TIMESTAMP))", "null")
+
+    testSqlApi("TIMESTAMPADD(DAY, 1, DATE '2016-06-15')", "2016-06-16")
+
+    testSqlApi("TIMESTAMPADD(MONTH, 3, CAST(NULL AS TIMESTAMP))", "null")
+
+  }
+
+  // ----------------------------------------------------------------------------------------------
+  // Hash functions
+  // ----------------------------------------------------------------------------------------------
+
+  @Test
+  def testHashFunctions(): Unit = {
+    val expectedMd5 = "098f6bcd4621d373cade4e832627b4f6"
+    val expectedSha1 = "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3"
+    val expectedSha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+
+    testAllApis(
+      "test".md5(),
+      "md5('test')",
+      "MD5('test')",
+      expectedMd5)
+
+    testAllApis(
+      "test".sha1(),
+      "sha1('test')",
+      "SHA1('test')",
+      expectedSha1)
+
+    testAllApis(
+      "test".sha256(),
+      "sha256('test')",
+      "SHA256('test')",
+      expectedSha256)
+
+    testAllApis(
+      'f33.md5(),
+      "sha256(f33)",
+      "SHA256(f33)",
+      "null")
+
+    testAllApis(
+      'f33.sha256(),
+      "sha256(f33)",
+      "SHA256(f33)",
+      "null")
+
+    testAllApis(
+      'f33.sha256(),
+      "sha256(f33)",
+      "SHA256(f33)",
+      "null")
   }
 
   // ----------------------------------------------------------------------------------------------
@@ -1518,83 +1933,5 @@ class ScalarFunctionsTest extends ExpressionTestBase {
       "f21.isNotFalse",
       "f21 IS NOT FALSE",
       "true")
-  }
-
-  // ----------------------------------------------------------------------------------------------
-
-  def testData = {
-    val testData = new Row(33)
-    testData.setField(0, "This is a test String.")
-    testData.setField(1, true)
-    testData.setField(2, 42.toByte)
-    testData.setField(3, 43.toShort)
-    testData.setField(4, 44.toLong)
-    testData.setField(5, 4.5.toFloat)
-    testData.setField(6, 4.6)
-    testData.setField(7, 3)
-    testData.setField(8, " This is a test String. ")
-    testData.setField(9, -42.toByte)
-    testData.setField(10, -43.toShort)
-    testData.setField(11, -44.toLong)
-    testData.setField(12, -4.5.toFloat)
-    testData.setField(13, -4.6)
-    testData.setField(14, -3)
-    testData.setField(15, BigDecimal("-1231.1231231321321321111").bigDecimal)
-    testData.setField(16, Date.valueOf("1996-11-10"))
-    testData.setField(17, Time.valueOf("06:55:44"))
-    testData.setField(18, Timestamp.valueOf("1996-11-10 06:55:44.333"))
-    testData.setField(19, 1467012213000L) // +16979 07:23:33.000
-    testData.setField(20, 25) // +2-01
-    testData.setField(21, null)
-    testData.setField(22, BigDecimal("2").bigDecimal)
-    testData.setField(23, "%This is a test String.")
-    testData.setField(24, "*_This is a test String.")
-    testData.setField(25, 0.42.toByte)
-    testData.setField(26, 0.toShort)
-    testData.setField(27, 0.toLong)
-    testData.setField(28, 0.45.toFloat)
-    testData.setField(29, 0.46)
-    testData.setField(30, 1)
-    testData.setField(31, BigDecimal("-0.1231231321321321111").bigDecimal)
-    testData.setField(32, -1)
-    testData
-  }
-
-  def typeInfo = {
-    new RowTypeInfo(
-      Types.STRING,
-      Types.BOOLEAN,
-      Types.BYTE,
-      Types.SHORT,
-      Types.LONG,
-      Types.FLOAT,
-      Types.DOUBLE,
-      Types.INT,
-      Types.STRING,
-      Types.BYTE,
-      Types.SHORT,
-      Types.LONG,
-      Types.FLOAT,
-      Types.DOUBLE,
-      Types.INT,
-      Types.DECIMAL,
-      Types.SQL_DATE,
-      Types.SQL_TIME,
-      Types.SQL_TIMESTAMP,
-      Types.INTERVAL_MILLIS,
-      Types.INTERVAL_MONTHS,
-      Types.BOOLEAN,
-      Types.DECIMAL,
-      Types.STRING,
-      Types.STRING,
-      Types.BYTE,
-      Types.SHORT,
-      Types.LONG,
-      Types.FLOAT,
-      Types.DOUBLE,
-      Types.INT,
-      Types.DECIMAL,
-      Types.INT).asInstanceOf[TypeInformation[Any]]
-
   }
 }

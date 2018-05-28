@@ -24,25 +24,24 @@ import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.configuration.AkkaOptions;
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.TaskManagerOptions;
-import org.apache.flink.runtime.minicluster.LocalFlinkMiniCluster;
-import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.runtime.state.CheckpointListener;
+import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.checkpoint.ListCheckpointed;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.apache.flink.streaming.api.functions.source.RichSourceFunction;
 import org.apache.flink.streaming.api.functions.windowing.RichAllWindowFunction;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
-import org.apache.flink.streaming.util.TestStreamEnvironment;
+import org.apache.flink.test.util.MiniClusterResource;
 import org.apache.flink.test.util.SuccessException;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.TestLogger;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+
+import org.junit.ClassRule;
 import org.junit.Test;
 
 import java.util.Collections;
@@ -51,55 +50,46 @@ import java.util.List;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.apache.flink.test.util.TestUtils.tryExecute;
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * This verifies that checkpointing works correctly with event time windows.
  *
- * <p>
- * This is a version of {@link AbstractEventTimeWindowCheckpointingITCase} for All-Windows.
+ * <p>This is a version of {@link AbstractEventTimeWindowCheckpointingITCase} for All-Windows.
  */
 @SuppressWarnings("serial")
 public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 
 	private static final int PARALLELISM = 4;
 
-	private static LocalFlinkMiniCluster cluster;
+	@ClassRule
+	public static final MiniClusterResource MINI_CLUSTER_RESOURCE = new MiniClusterResource(
+		new MiniClusterResource.MiniClusterResourceConfiguration(
+			getConfiguration(),
+			2,
+			PARALLELISM / 2));
 
-	private static TestStreamEnvironment env;
-
-
-	@BeforeClass
-	public static void startTestCluster() {
+	private static Configuration getConfiguration() {
 		Configuration config = new Configuration();
-		config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, 2);
-		config.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, PARALLELISM / 2);
 		config.setLong(TaskManagerOptions.MANAGED_MEMORY_SIZE, 48L);
 		config.setString(AkkaOptions.LOOKUP_TIMEOUT, "60 s");
 		config.setString(AkkaOptions.ASK_TIMEOUT, "60 s");
-		cluster = new LocalFlinkMiniCluster(config, false);
-		cluster.start();
-
-		env = new TestStreamEnvironment(cluster, PARALLELISM);
-	}
-
-	@AfterClass
-	public static void stopTestCluster() {
-		if (cluster != null) {
-			cluster.stop();
-		}
+		return config;
 	}
 
 	// ------------------------------------------------------------------------
 
 	@Test
 	public void testTumblingTimeWindow() {
-		final int NUM_ELEMENTS_PER_KEY = 3000;
-		final int WINDOW_SIZE = 100;
-		final int NUM_KEYS = 1;
+		final int numElementsPerKey = 3000;
+		final int windowSize = 100;
+		final int numKeys = 1;
 		FailingSource.reset();
-		
+
 		try {
+			StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 			env.setParallelism(PARALLELISM);
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 			env.enableCheckpointing(100);
@@ -107,11 +97,11 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 			env.getConfig().disableSysoutLogging();
 
 			env
-					.addSource(new FailingSource(NUM_KEYS,
-							NUM_ELEMENTS_PER_KEY,
-							NUM_ELEMENTS_PER_KEY / 3))
+					.addSource(new FailingSource(numKeys,
+							numElementsPerKey,
+							numElementsPerKey / 3))
 					.rebalance()
-					.timeWindowAll(Time.of(WINDOW_SIZE, MILLISECONDS))
+					.timeWindowAll(Time.of(windowSize, MILLISECONDS))
 					.apply(new RichAllWindowFunction<Tuple2<Long, IntType>, Tuple4<Long, Long, Long, IntType>, TimeWindow>() {
 
 						private boolean open = false;
@@ -141,8 +131,7 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 							out.collect(new Tuple4<>(key, window.getStart(), window.getEnd(), new IntType(sum)));
 						}
 					})
-					.addSink(new ValidatingSink(NUM_KEYS, NUM_ELEMENTS_PER_KEY / WINDOW_SIZE)).setParallelism(1);
-
+					.addSink(new ValidatingSink(numKeys, numElementsPerKey / windowSize)).setParallelism(1);
 
 			tryExecute(env, "Tumbling Window Test");
 		}
@@ -154,13 +143,14 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 
 	@Test
 	public void testSlidingTimeWindow() {
-		final int NUM_ELEMENTS_PER_KEY = 3000;
-		final int WINDOW_SIZE = 1000;
-		final int WINDOW_SLIDE = 100;
-		final int NUM_KEYS = 1;
+		final int numElementsPerKey = 3000;
+		final int windowSize = 1000;
+		final int windowSlide = 100;
+		final int numKeys = 1;
 		FailingSource.reset();
 
 		try {
+			StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 			env.setParallelism(PARALLELISM);
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 			env.enableCheckpointing(100);
@@ -168,9 +158,9 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 			env.getConfig().disableSysoutLogging();
 
 			env
-					.addSource(new FailingSource(NUM_KEYS, NUM_ELEMENTS_PER_KEY, NUM_ELEMENTS_PER_KEY / 3))
+					.addSource(new FailingSource(numKeys, numElementsPerKey, numElementsPerKey / 3))
 					.rebalance()
-					.timeWindowAll(Time.of(WINDOW_SIZE, MILLISECONDS), Time.of(WINDOW_SLIDE, MILLISECONDS))
+					.timeWindowAll(Time.of(windowSize, MILLISECONDS), Time.of(windowSlide, MILLISECONDS))
 					.apply(new RichAllWindowFunction<Tuple2<Long, IntType>, Tuple4<Long, Long, Long, IntType>, TimeWindow>() {
 
 						private boolean open = false;
@@ -200,8 +190,7 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 							out.collect(new Tuple4<>(key, window.getStart(), window.getEnd(), new IntType(sum)));
 						}
 					})
-					.addSink(new ValidatingSink(NUM_KEYS, NUM_ELEMENTS_PER_KEY / WINDOW_SLIDE)).setParallelism(1);
-
+					.addSink(new ValidatingSink(numKeys, numElementsPerKey / windowSlide)).setParallelism(1);
 
 			tryExecute(env, "Sliding Window Test");
 		}
@@ -213,12 +202,13 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 
 	@Test
 	public void testPreAggregatedTumblingTimeWindow() {
-		final int NUM_ELEMENTS_PER_KEY = 3000;
-		final int WINDOW_SIZE = 100;
-		final int NUM_KEYS = 1;
+		final int numElementsPerKey = 3000;
+		final int windowSize = 100;
+		final int numKeys = 1;
 		FailingSource.reset();
 
 		try {
+			StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 			env.setParallelism(PARALLELISM);
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 			env.enableCheckpointing(100);
@@ -226,11 +216,11 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 			env.getConfig().disableSysoutLogging();
 
 			env
-					.addSource(new FailingSource(NUM_KEYS,
-							NUM_ELEMENTS_PER_KEY,
-							NUM_ELEMENTS_PER_KEY / 3))
+					.addSource(new FailingSource(numKeys,
+							numElementsPerKey,
+							numElementsPerKey / 3))
 					.rebalance()
-					.timeWindowAll(Time.of(WINDOW_SIZE, MILLISECONDS))
+					.timeWindowAll(Time.of(windowSize, MILLISECONDS))
 					.reduce(
 							new ReduceFunction<Tuple2<Long, IntType>>() {
 
@@ -269,8 +259,7 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 							}
 						}
 					})
-					.addSink(new ValidatingSink(NUM_KEYS, NUM_ELEMENTS_PER_KEY / WINDOW_SIZE)).setParallelism(1);
-
+					.addSink(new ValidatingSink(numKeys, numElementsPerKey / windowSize)).setParallelism(1);
 
 			tryExecute(env, "Tumbling Window Test");
 		}
@@ -282,12 +271,13 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 
 	@Test
 	public void testPreAggregatedFoldingTumblingTimeWindow() {
-		final int NUM_ELEMENTS_PER_KEY = 3000;
-		final int WINDOW_SIZE = 100;
-		final int NUM_KEYS = 1;
+		final int numElementsPerKey = 3000;
+		final int windowSize = 100;
+		final int numKeys = 1;
 		FailingSource.reset();
 
 		try {
+			StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 			env.setParallelism(PARALLELISM);
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 			env.enableCheckpointing(100);
@@ -295,11 +285,11 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 			env.getConfig().disableSysoutLogging();
 
 			env
-					.addSource(new FailingSource(NUM_KEYS,
-							NUM_ELEMENTS_PER_KEY,
-							NUM_ELEMENTS_PER_KEY / 3))
+					.addSource(new FailingSource(numKeys,
+							numElementsPerKey,
+							numElementsPerKey / 3))
 					.rebalance()
-					.timeWindowAll(Time.of(WINDOW_SIZE, MILLISECONDS))
+					.timeWindowAll(Time.of(windowSize, MILLISECONDS))
 					.fold(new Tuple4<>(0L, 0L, 0L, new IntType(0)),
 							new FoldFunction<Tuple2<Long, IntType>, Tuple4<Long, Long, Long, IntType>>() {
 								@Override
@@ -337,8 +327,7 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 									}
 								}
 							})
-					.addSink(new ValidatingSink(NUM_KEYS, NUM_ELEMENTS_PER_KEY / WINDOW_SIZE)).setParallelism(1);
-
+					.addSink(new ValidatingSink(numKeys, numElementsPerKey / windowSize)).setParallelism(1);
 
 			tryExecute(env, "Tumbling Window Test");
 		}
@@ -350,13 +339,14 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 
 	@Test
 	public void testPreAggregatedSlidingTimeWindow() {
-		final int NUM_ELEMENTS_PER_KEY = 3000;
-		final int WINDOW_SIZE = 1000;
-		final int WINDOW_SLIDE = 100;
-		final int NUM_KEYS = 1;
+		final int numElementsPerKey = 3000;
+		final int windowSize = 1000;
+		final int windowSlide = 100;
+		final int numKeys = 1;
 		FailingSource.reset();
 
 		try {
+			StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 			env.setParallelism(PARALLELISM);
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 			env.enableCheckpointing(100);
@@ -364,12 +354,12 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 			env.getConfig().disableSysoutLogging();
 
 			env
-					.addSource(new FailingSource(NUM_KEYS,
-							NUM_ELEMENTS_PER_KEY,
-							NUM_ELEMENTS_PER_KEY / 3))
+					.addSource(new FailingSource(numKeys,
+							numElementsPerKey,
+							numElementsPerKey / 3))
 					.rebalance()
-					.timeWindowAll(Time.of(WINDOW_SIZE, MILLISECONDS),
-							Time.of(WINDOW_SLIDE, MILLISECONDS))
+					.timeWindowAll(Time.of(windowSize, MILLISECONDS),
+							Time.of(windowSlide, MILLISECONDS))
 					.reduce(
 							new ReduceFunction<Tuple2<Long, IntType>>() {
 
@@ -408,8 +398,7 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 							}
 						}
 					})
-					.addSink(new ValidatingSink(NUM_KEYS, NUM_ELEMENTS_PER_KEY / WINDOW_SLIDE)).setParallelism(1);
-
+					.addSink(new ValidatingSink(numKeys, numElementsPerKey / windowSlide)).setParallelism(1);
 
 			tryExecute(env, "Tumbling Window Test");
 		}
@@ -419,14 +408,12 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 		}
 	}
 
-
 	// ------------------------------------------------------------------------
 	//  Utilities
 	// ------------------------------------------------------------------------
 
 	private static class FailingSource extends RichSourceFunction<Tuple2<Long, IntType>>
-			implements ListCheckpointed<Integer>, CheckpointListener
-	{
+			implements ListCheckpointed<Integer>, CheckpointListener {
 		private static volatile boolean failedBefore = false;
 
 		private final int numKeys;
@@ -467,8 +454,7 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 				}
 
 				if (numElementsEmitted < numElementsToEmit &&
-						(failedBefore || numElementsEmitted <= failureAfterNumElements))
-				{
+						(failedBefore || numElementsEmitted <= failureAfterNumElements)) {
 					// the function failed before, or we are in the elements before the failure
 					synchronized (ctx.getCheckpointLock()) {
 						int next = numElementsEmitted++;
@@ -579,7 +565,6 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 
 			assertEquals("Window start: " + value.f1 + " end: " + value.f2, expectedSum, value.f3.value);
 
-
 			Integer curr = windowCounts.get(value.f0);
 			if (curr != null) {
 				windowCounts.put(value.f0, curr + 1);
@@ -625,12 +610,17 @@ public class EventTimeAllWindowCheckpointingITCase extends TestLogger {
 	//  Utilities
 	// ------------------------------------------------------------------------
 
+	/**
+	 * Custom boxed integer type.
+	 */
 	public static class IntType {
 
 		public int value;
 
 		public IntType() {}
 
-		public IntType(int value) { this.value = value; }
+		public IntType(int value) {
+			this.value = value;
+		}
 	}
 }

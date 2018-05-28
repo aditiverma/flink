@@ -18,39 +18,48 @@
 
 package org.apache.flink.test.runtime.minicluster;
 
-import akka.actor.ActorSystem;
-import akka.testkit.JavaTestKit;
-
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
-import org.apache.flink.runtime.instance.AkkaActorGateway;
 import org.apache.flink.runtime.instance.ActorGateway;
+import org.apache.flink.runtime.instance.AkkaActorGateway;
 import org.apache.flink.runtime.messages.JobManagerMessages;
 import org.apache.flink.runtime.minicluster.LocalFlinkMiniCluster;
 import org.apache.flink.runtime.testingUtils.TestingUtils;
-
 import org.apache.flink.util.TestLogger;
+
+import akka.actor.ActorSystem;
+import akka.testkit.JavaTestKit;
 import org.junit.Test;
-import scala.concurrent.ExecutionContext$;
-import scala.concurrent.forkjoin.ForkJoinPool;
-import scala.concurrent.impl.ExecutionContextImpl;
 
 import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
+import scala.concurrent.ExecutionContext$;
+import scala.concurrent.forkjoin.ForkJoinPool;
+import scala.concurrent.impl.ExecutionContextImpl;
+
 import static org.junit.Assert.fail;
 
+/**
+ * Integration tests for {@link LocalFlinkMiniCluster}.
+ */
 public class LocalFlinkMiniClusterITCase extends TestLogger {
 
-	private static String[] ALLOWED_THREAD_PREFIXES = { };
+	private static final String[] ALLOWED_THREAD_PREFIXES = {
+		// This is a daemon thread spawned by netty's ThreadLocalRandom class if no
+		// initialSeedUniquifier is set yet and it is sometimes spawned before this test and
+		// sometimes during this test.
+		"initialSeedUniquifierGenerator"
+	};
 
 	@Test
 	public void testLocalFlinkMiniClusterWithMultipleTaskManagers() {
-		
+
 		final ActorSystem system = ActorSystem.create("Testkit", AkkaUtils.getDefaultAkkaConfig());
 		LocalFlinkMiniCluster miniCluster = null;
 
@@ -64,12 +73,11 @@ public class LocalFlinkMiniClusterITCase extends TestLogger {
 			Thread.enumerate(allThreads);
 			threadsBefore.addAll(Arrays.asList(allThreads));
 		}
-		
-		
+
 		try {
 			Configuration config = new Configuration();
 			config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, numTMs);
-			config.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, numSlots);
+			config.setInteger(TaskManagerOptions.NUM_TASK_SLOTS, numSlots);
 			miniCluster = new LocalFlinkMiniCluster(config, true);
 
 			miniCluster.start();
@@ -93,11 +101,10 @@ public class LocalFlinkMiniClusterITCase extends TestLogger {
 								JobManagerMessages.getRequestTotalNumberOfSlots(),
 								selfGateway);
 
-						expectMsgEquals(TestingUtils.TESTING_DURATION(), numTMs*numSlots);
+						expectMsgEquals(TestingUtils.TESTING_DURATION(), numTMs * numSlots);
 					}
 				};
 			}};
-
 
 		} finally {
 			if (miniCluster != null) {
@@ -113,7 +120,7 @@ public class LocalFlinkMiniClusterITCase extends TestLogger {
 		try {
 			Field f = ExecutionContextImpl.class.getDeclaredField("executor");
 			f.setAccessible(true);
-			
+
 			Object exec = ExecutionContext$.MODULE$.global();
 			ForkJoinPool executor = (ForkJoinPool) f.get(exec);
 			executor.shutdownNow();
@@ -122,14 +129,14 @@ public class LocalFlinkMiniClusterITCase extends TestLogger {
 			System.err.println("Cannot test proper thread shutdown for local execution.");
 			return;
 		}
-		
+
 		// check for remaining threads
 		// we need to check repeatedly for a while, because some threads shut down slowly
-		
+
 		long deadline = System.currentTimeMillis() + 30000;
 		boolean foundThreads = true;
 		String threadName = "";
-		
+
 		while (System.currentTimeMillis() < deadline) {
 			// check that no additional threads remain
 			final Thread[] threadsAfter = new Thread[Thread.activeCount()];
@@ -146,7 +153,7 @@ public class LocalFlinkMiniClusterITCase extends TestLogger {
 							break;
 						}
 					}
-					
+
 					if (!allowed) {
 						foundThreads = true;
 						threadName = t.toString();
@@ -154,7 +161,7 @@ public class LocalFlinkMiniClusterITCase extends TestLogger {
 					}
 				}
 			}
-			
+
 			if (foundThreads) {
 				try {
 					Thread.sleep(500);
@@ -163,7 +170,7 @@ public class LocalFlinkMiniClusterITCase extends TestLogger {
 				break;
 			}
 		}
-		
+
 		if (foundThreads) {
 			fail("Thread " + threadName + " was started by the mini cluster, but not shut down");
 		}

@@ -174,6 +174,13 @@ object ProjectionTranslator {
             replaceAggregationsAndProperties(exp, tableEnv, aggNames, propNames, projectedNames))
         c.makeCopy(Array(newArgs))
 
+      // map constructor
+      case c @ MapConstructor(args) =>
+        val newArgs = c.elements
+          .map((exp: Expression) =>
+            replaceAggregationsAndProperties(exp, tableEnv, aggNames, propNames, projectedNames))
+        c.makeCopy(Array(newArgs))
+
       // General expression
       case e: Expression =>
         val newArgs = e.productIterator.map {
@@ -316,28 +323,28 @@ object ProjectionTranslator {
       identifyFieldReferences(b.right, l)
 
     // Functions calls
-    case c @ Call(name, args) =>
+    case Call(_, args: Seq[Expression]) =>
       args.foldLeft(fieldReferences) {
         (fieldReferences, expr) => identifyFieldReferences(expr, fieldReferences)
       }
-    case sfc @ ScalarFunctionCall(clazz, args) =>
+    case ScalarFunctionCall(_, args: Seq[Expression]) =>
       args.foldLeft(fieldReferences) {
         (fieldReferences, expr) => identifyFieldReferences(expr, fieldReferences)
       }
 
-    case aggfc @ AggFunctionCall(clazz, args) =>
+    case AggFunctionCall(_, _, _, args) =>
       args.foldLeft(fieldReferences) {
         (fieldReferences, expr) => identifyFieldReferences(expr, fieldReferences)
       }
 
     // array constructor
-    case c @ ArrayConstructor(args) =>
+    case ArrayConstructor(args) =>
       args.foldLeft(fieldReferences) {
         (fieldReferences, expr) => identifyFieldReferences(expr, fieldReferences)
       }
 
     // ignore fields from window property
-    case w : WindowProperty =>
+    case _: WindowProperty =>
       fieldReferences
 
     // keep this case after all unwanted unary expressions

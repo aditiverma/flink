@@ -22,11 +22,11 @@ import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.streaming.api.TimeDomain;
 import org.apache.flink.streaming.api.functions.co.CoProcessFunction;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.tasks.OperatorStateHandles;
 import org.apache.flink.streaming.util.KeyedTwoInputStreamOperatorTestHarness;
 import org.apache.flink.streaming.util.TestHarnessUtil;
 import org.apache.flink.streaming.util.TwoInputStreamOperatorTestHarness;
@@ -177,8 +177,8 @@ public class KeyedCoProcessOperatorTest extends TestLogger {
 
 		expectedOutput.add(new StreamRecord<>("INPUT1:17"));
 		expectedOutput.add(new StreamRecord<>("INPUT2:18"));
-		expectedOutput.add(new StreamRecord<>("1777", 5L));
-		expectedOutput.add(new StreamRecord<>("1777", 6L));
+		expectedOutput.add(new StreamRecord<>("1777"));
+		expectedOutput.add(new StreamRecord<>("1777"));
 
 		TestHarnessUtil.assertOutputEquals("Output was not correct.", expectedOutput, testHarness.getOutput());
 
@@ -266,8 +266,8 @@ public class KeyedCoProcessOperatorTest extends TestLogger {
 
 		expectedOutput.add(new StreamRecord<>("INPUT1:17"));
 		expectedOutput.add(new StreamRecord<>("INPUT2:42"));
-		expectedOutput.add(new StreamRecord<>("STATE:17", 6L));
-		expectedOutput.add(new StreamRecord<>("STATE:42", 7L));
+		expectedOutput.add(new StreamRecord<>("STATE:17"));
+		expectedOutput.add(new StreamRecord<>("STATE:42"));
 
 		TestHarnessUtil.assertOutputEquals("Output was not correct.", expectedOutput, testHarness.getOutput());
 
@@ -294,7 +294,7 @@ public class KeyedCoProcessOperatorTest extends TestLogger {
 		testHarness.processElement2(new StreamRecord<>("5", 12L));
 
 		// snapshot and restore from scratch
-		OperatorStateHandles snapshot = testHarness.snapshot(0, 0);
+		OperatorSubtaskState snapshot = testHarness.snapshot(0, 0);
 
 		testHarness.close();
 
@@ -316,7 +316,7 @@ public class KeyedCoProcessOperatorTest extends TestLogger {
 
 		ConcurrentLinkedQueue<Object> expectedOutput = new ConcurrentLinkedQueue<>();
 
-		expectedOutput.add(new StreamRecord<>("PROC:1777", 5L));
+		expectedOutput.add(new StreamRecord<>("PROC:1777"));
 		expectedOutput.add(new StreamRecord<>("EVENT:1777", 6L));
 		expectedOutput.add(new Watermark(6));
 

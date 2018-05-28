@@ -20,9 +20,9 @@ package org.apache.flink.storm.exclamation;
 
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.java.typeutils.TypeExtractor;
-import org.apache.flink.examples.java.wordcount.util.WordCountData;
 import org.apache.flink.storm.exclamation.operators.ExclamationBolt;
 import org.apache.flink.storm.util.StormConfig;
+import org.apache.flink.storm.wordcount.util.WordCountData;
 import org.apache.flink.storm.wrappers.BoltWrapper;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -36,7 +36,7 @@ import org.apache.storm.utils.Utils;
  * <p>The input is a plain text file with lines separated by newline characters.
  *
  * <p>Usage:
- * <code>ExclamationWithmBolt &lt;text path&gt; &lt;result path&gt; &lt;number of exclamation marks&gt;</code><br>
+ * <code>ExclamationWithBolt &lt;text path&gt; &lt;result path&gt; &lt;number of exclamation marks&gt;</code><br>
  * If no parameters are provided, the program is run with default data from {@link WordCountData} with x=2.
  *
  * <p>This example shows how to:

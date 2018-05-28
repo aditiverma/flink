@@ -15,11 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.test.state.operator.restore.unkeyed;
 
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.util.migration.MigrationVersion;
 import org.apache.flink.test.state.operator.restore.ExecutionMode;
 
 import static org.apache.flink.test.state.operator.restore.unkeyed.NonKeyedJob.createFirstStatefulMap;
@@ -33,8 +35,8 @@ import static org.apache.flink.test.state.operator.restore.unkeyed.NonKeyedJob.c
  */
 public class ChainOrderTest extends AbstractNonKeyedOperatorRestoreTestBase {
 
-	public ChainOrderTest(String savepointPath) {
-		super(savepointPath);
+	public ChainOrderTest(MigrationVersion migrationVersion) {
+		super(migrationVersion);
 	}
 
 	@Override

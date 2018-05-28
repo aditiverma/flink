@@ -27,15 +27,19 @@ import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.history.FsJobArchivist;
 import org.apache.flink.runtime.net.SSLUtils;
+import org.apache.flink.runtime.rest.handler.legacy.DashboardConfigHandler;
+import org.apache.flink.runtime.rest.messages.DashboardConfiguration;
+import org.apache.flink.runtime.security.SecurityConfiguration;
 import org.apache.flink.runtime.security.SecurityUtils;
 import org.apache.flink.runtime.webmonitor.WebMonitorUtils;
-import org.apache.flink.runtime.webmonitor.handlers.DashboardConfigHandler;
 import org.apache.flink.runtime.webmonitor.utils.WebFrontendBootstrap;
 import org.apache.flink.util.FileUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.ShutdownHookUtil;
 
-import io.netty.handler.codec.http.router.Router;
+import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.router.Router;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,6 +50,7 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.nio.file.Files;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -100,7 +105,7 @@ public class HistoryServer {
 		final Configuration flinkConfig = GlobalConfiguration.loadConfiguration(configDir);
 
 		// run the history server
-		SecurityUtils.install(new SecurityUtils.SecurityConfiguration(flinkConfig));
+		SecurityUtils.install(new SecurityConfiguration(flinkConfig));
 
 		try {
 			SecurityUtils.getInstalledContext().runSecured(new Callable<Integer>() {
@@ -177,22 +182,10 @@ public class HistoryServer {
 		long refreshIntervalMillis = config.getLong(HistoryServerOptions.HISTORY_SERVER_ARCHIVE_REFRESH_INTERVAL);
 		archiveFetcher = new HistoryServerArchiveFetcher(refreshIntervalMillis, refreshDirs, webDir, numFinishedPolls);
 
-		this.shutdownHook = new Thread() {
-			@Override
-			public void run() {
-				HistoryServer.this.stop();
-			}
-		};
-		// add shutdown hook for deleting the directories and remaining temp files on shutdown
-		try {
-			Runtime.getRuntime().addShutdownHook(shutdownHook);
-		} catch (IllegalStateException e) {
-			// race, JVM is in shutdown already, we can safely ignore this
-			LOG.debug("Unable to add shutdown hook, shutdown already in progress", e);
-		} catch (Throwable t) {
-			// these errors usually happen when the shutdown is already in progress
-			LOG.warn("Error while adding shutdown hook", t);
-		}
+		this.shutdownHook = ShutdownHookUtil.addShutdownHook(
+			HistoryServer.this::stop,
+			HistoryServer.class.getSimpleName(),
+			LOG);
 	}
 
 	@VisibleForTesting
@@ -259,16 +252,8 @@ public class HistoryServer {
 
 				LOG.info("Stopped history server.");
 
-				// Remove shutdown hook to prevent resource leaks, unless this is invoked by the shutdown hook itself
-				if (shutdownHook != null && shutdownHook != Thread.currentThread()) {
-					try {
-						Runtime.getRuntime().removeShutdownHook(shutdownHook);
-					} catch (IllegalStateException ignored) {
-						// race, JVM is in shutdown already, we can safely ignore this
-					} catch (Throwable t) {
-						LOG.warn("Exception while unregistering HistoryServer cleanup shutdown hook.");
-					}
-				}
+				// Remove shutdown hook to prevent resource leaks
+				ShutdownHookUtil.removeShutdownHook(shutdownHook, getClass().getSimpleName(), LOG);
 			}
 		}
 	}
@@ -288,7 +273,7 @@ public class HistoryServer {
 
 	private void createDashboardConfigFile() throws IOException {
 		try (FileWriter fw = createOrGetFile(webDir, "config")) {
-			fw.write(DashboardConfigHandler.createConfigJson(webRefreshIntervalMillis));
+			fw.write(DashboardConfigHandler.createConfigJson(DashboardConfiguration.from(webRefreshIntervalMillis, ZonedDateTime.now())));
 			fw.flush();
 		} catch (IOException ioe) {
 			LOG.error("Failed to write config file.");

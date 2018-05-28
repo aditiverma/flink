@@ -24,8 +24,9 @@ import java.util.concurrent.{Executor, ScheduledExecutorService}
 import akka.actor.{ActorRef, ActorSystem, Props}
 import org.apache.flink.api.common.JobID
 import org.apache.flink.api.common.io.FileOutputFormat
-import org.apache.flink.configuration.{ConfigConstants, Configuration, QueryableStateOptions, TaskManagerOptions}
+import org.apache.flink.configuration._
 import org.apache.flink.core.fs.Path
+import org.apache.flink.runtime.blob.BlobServer
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory
 import org.apache.flink.runtime.clusterframework.FlinkResourceManager
 import org.apache.flink.runtime.clusterframework.standalone.StandaloneResourceManager
@@ -45,13 +46,16 @@ import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService
 import org.apache.flink.runtime.memory.MemoryManager
 import org.apache.flink.runtime.messages.JobManagerMessages
 import org.apache.flink.runtime.messages.JobManagerMessages.{RunningJobsStatus, StoppingFailure, StoppingResponse}
-import org.apache.flink.runtime.metrics.MetricRegistry
+import org.apache.flink.runtime.metrics.groups.{JobManagerMetricGroup, TaskManagerMetricGroup}
+import org.apache.flink.runtime.metrics.util.MetricUtils
+import org.apache.flink.runtime.state.TaskExecutorLocalStateStoresManager
 import org.apache.flink.runtime.taskexecutor.{TaskExecutor, TaskManagerConfiguration, TaskManagerServices, TaskManagerServicesConfiguration}
 import org.apache.flink.runtime.taskmanager.{TaskManager, TaskManagerLocation}
 import org.apache.flink.runtime.util.EnvironmentInformation
+import org.apache.flink.util.NetUtils
 
-import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.{Await, ExecutionContext}
 
 /**
  * Local Flink mini cluster which executes all [[TaskManager]]s and the [[JobManager]] in the same
@@ -91,13 +95,6 @@ class LocalFlinkMiniCluster(
     config.addAll(userConfiguration)
     setMemory(config)
     initializeIOFormatClasses(config)
-
-    // Disable queryable state server if nothing else is configured explicitly
-    if (!config.containsKey(QueryableStateOptions.SERVER_ENABLE.key())) {
-      LOG.info("Disabled queryable state server")
-      config.setBoolean(QueryableStateOptions.SERVER_ENABLE, false)
-    }
-
     config
   }
 
@@ -118,37 +115,37 @@ class LocalFlinkMiniCluster(
   // Start methods for the distributed components
   //------------------------------------------------------------------------------------------------
 
-  override def startJobManager(index: Int, system: ActorSystem): ActorRef = {
+  override def startJobManager(
+      index: Int,
+      system: ActorSystem,
+      optRestAddress: Option[String])
+    : ActorRef = {
     val config = originalConfiguration.clone()
 
     val jobManagerName = getJobManagerName(index)
     val archiveName = getArchiveName(index)
 
-    val jobManagerPort = config.getInteger(
-      ConfigConstants.JOB_MANAGER_IPC_PORT_KEY,
-      ConfigConstants.DEFAULT_JOB_MANAGER_IPC_PORT)
+    val jobManagerPort = config.getInteger(JobManagerOptions.PORT)
 
     if(jobManagerPort > 0) {
-      config.setInteger(ConfigConstants.JOB_MANAGER_IPC_PORT_KEY, jobManagerPort + index)
+      config.setInteger(JobManagerOptions.PORT, jobManagerPort + index)
     }
 
     val (instanceManager,
-    scheduler,
-    libraryCacheManager,
-    restartStrategyFactory,
-    timeout,
-    archiveCount,
-    archivePath,
-    jobRecoveryTimeout,
-    metricsRegistry) = JobManager.createJobManagerComponents(
+      scheduler,
+      blobServer,
+      libraryCacheManager,
+      restartStrategyFactory,
+      timeout,
+      archiveCount,
+      archivePath,
+      jobRecoveryTimeout,
+      jobManagerMetricGroup) = JobManager.createJobManagerComponents(
       config,
       futureExecutor,
       ioExecutor,
-      highAvailabilityServices.createBlobStore())
-
-    if (config.getBoolean(ConfigConstants.LOCAL_START_WEBSERVER, false)) {
-      metricsRegistry.get.startQueryService(system, null)
-    }
+      highAvailabilityServices.createBlobStore(),
+      metricRegistryOpt.get)
 
     val archive = system.actorOf(
       getArchiveProps(
@@ -165,6 +162,7 @@ class LocalFlinkMiniCluster(
         ioExecutor,
         instanceManager,
         scheduler,
+        blobServer,
         libraryCacheManager,
         archive,
         restartStrategyFactory,
@@ -174,7 +172,8 @@ class LocalFlinkMiniCluster(
         highAvailabilityServices.getSubmittedJobGraphStore(),
         highAvailabilityServices.getCheckpointRecoveryFactory(),
         jobRecoveryTimeout,
-        metricsRegistry),
+        jobManagerMetricGroup,
+        optRestAddress),
       jobManagerName)
   }
 
@@ -184,11 +183,11 @@ class LocalFlinkMiniCluster(
     val resourceManagerName = getResourceManagerName(index)
 
     val resourceManagerPort = config.getInteger(
-      ConfigConstants.RESOURCE_MANAGER_IPC_PORT_KEY,
-      ConfigConstants.DEFAULT_RESOURCE_MANAGER_IPC_PORT)
+      ResourceManagerOptions.IPC_PORT)
 
     if(resourceManagerPort > 0) {
-      config.setInteger(ConfigConstants.RESOURCE_MANAGER_IPC_PORT_KEY, resourceManagerPort + index)
+      config.setInteger(ResourceManagerOptions.IPC_PORT,
+        resourceManagerPort + index)
     }
 
     val resourceManagerProps = getResourceManagerProps(
@@ -203,19 +202,20 @@ class LocalFlinkMiniCluster(
   override def startTaskManager(index: Int, system: ActorSystem): ActorRef = {
     val config = originalConfiguration.clone()
 
-    val rpcPort = config.getInteger(
-      ConfigConstants.TASK_MANAGER_IPC_PORT_KEY,
-      ConfigConstants.DEFAULT_TASK_MANAGER_IPC_PORT)
+    val rpcPortRange = config.getString(TaskManagerOptions.RPC_PORT)
 
-    val dataPort = config.getInteger(
-      ConfigConstants.TASK_MANAGER_DATA_PORT_KEY,
-      ConfigConstants.DEFAULT_TASK_MANAGER_DATA_PORT)
+    val rpcPortIterator = NetUtils.getPortRangeFromString(rpcPortRange)
 
-    if (rpcPort > 0) {
-      config.setInteger(ConfigConstants.TASK_MANAGER_IPC_PORT_KEY, rpcPort + index)
+    val dataPort = config.getInteger(TaskManagerOptions.DATA_PORT)
+
+    if (rpcPortIterator.hasNext) {
+      val rpcPort = rpcPortIterator.next()
+      if (rpcPort > 0) {
+        config.setInteger(ConfigConstants.TASK_MANAGER_IPC_PORT_KEY, rpcPort + index)
+      }
     }
     if (dataPort > 0) {
-      config.setInteger(ConfigConstants.TASK_MANAGER_DATA_PORT_KEY, dataPort + index)
+      config.setInteger(TaskManagerOptions.DATA_PORT, dataPort + index)
     }
 
     val localExecution = numTaskManagers == 1
@@ -238,9 +238,15 @@ class LocalFlinkMiniCluster(
 
     val taskManagerServices = TaskManagerServices.fromConfiguration(
       taskManagerServicesConfiguration,
-      resourceID)
+      resourceID,
+      ioExecutor,
+      EnvironmentInformation.getSizeOfFreeHeapMemoryWithDefrag,
+      EnvironmentInformation.getMaxJvmHeapMemory)
 
-    val metricRegistry = taskManagerServices.getMetricRegistry()
+    val taskManagerMetricGroup = MetricUtils.instantiateTaskManagerMetricGroup(
+      metricRegistryOpt.get,
+      taskManagerServices.getTaskManagerLocation(),
+      taskManagerServices.getNetworkEnvironment())
 
     val props = getTaskManagerProps(
       taskManagerClass,
@@ -250,11 +256,8 @@ class LocalFlinkMiniCluster(
       taskManagerServices.getMemoryManager(),
       taskManagerServices.getIOManager(),
       taskManagerServices.getNetworkEnvironment,
-      metricRegistry)
-
-    if (config.getBoolean(ConfigConstants.LOCAL_START_WEBSERVER, false)) {
-      metricRegistry.startQueryService(system, resourceID)
-    }
+      taskManagerServices.getTaskManagerStateStore,
+      taskManagerMetricGroup)
 
     system.actorOf(props, taskManagerActorName)
   }
@@ -277,6 +280,7 @@ class LocalFlinkMiniCluster(
       ioExecutor: Executor,
       instanceManager: InstanceManager,
       scheduler: Scheduler,
+      blobServer: BlobServer,
       libraryCacheManager: BlobLibraryCacheManager,
       archive: ActorRef,
       restartStrategyFactory: RestartStrategyFactory,
@@ -285,7 +289,8 @@ class LocalFlinkMiniCluster(
       submittedJobGraphStore: SubmittedJobGraphStore,
       checkpointRecoveryFactory: CheckpointRecoveryFactory,
       jobRecoveryTimeout: FiniteDuration,
-      metricsRegistry: Option[MetricRegistry])
+      jobManagerMetricGroup: JobManagerMetricGroup,
+      optRestAddress: Option[String])
     : Props = {
 
     JobManager.getJobManagerProps(
@@ -295,6 +300,7 @@ class LocalFlinkMiniCluster(
       ioExecutor,
       instanceManager,
       scheduler,
+      blobServer,
       libraryCacheManager,
       archive,
       restartStrategyFactory,
@@ -303,7 +309,8 @@ class LocalFlinkMiniCluster(
       submittedJobGraphStore,
       checkpointRecoveryFactory,
       jobRecoveryTimeout,
-      metricsRegistry)
+      jobManagerMetricGroup,
+      optRestAddress)
   }
 
   def getTaskManagerProps(
@@ -314,7 +321,8 @@ class LocalFlinkMiniCluster(
     memoryManager: MemoryManager,
     ioManager: IOManager,
     networkEnvironment: NetworkEnvironment,
-    metricsRegistry: MetricRegistry): Props = {
+    taskManagerLocalStateStoresManager: TaskExecutorLocalStateStoresManager,
+    taskManagerMetricGroup: TaskManagerMetricGroup): Props = {
 
     TaskManager.getTaskManagerProps(
       taskManagerClass,
@@ -324,8 +332,9 @@ class LocalFlinkMiniCluster(
       memoryManager,
       ioManager,
       networkEnvironment,
+      taskManagerLocalStateStoresManager,
       highAvailabilityServices,
-      metricsRegistry)
+      taskManagerMetricGroup)
   }
 
   def getResourceManagerProps(
@@ -385,8 +394,8 @@ class LocalFlinkMiniCluster(
   def getDefaultConfig: Configuration = {
     val config: Configuration = new Configuration()
 
-    config.setString(ConfigConstants.JOB_MANAGER_IPC_ADDRESS_KEY, hostname)
-    config.setInteger(ConfigConstants.JOB_MANAGER_IPC_PORT_KEY, 0)
+    config.setString(JobManagerOptions.ADDRESS, hostname)
+    config.setInteger(JobManagerOptions.PORT, 0)
 
     config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER,
       ConfigConstants.DEFAULT_LOCAL_NUMBER_TASK_MANAGER)

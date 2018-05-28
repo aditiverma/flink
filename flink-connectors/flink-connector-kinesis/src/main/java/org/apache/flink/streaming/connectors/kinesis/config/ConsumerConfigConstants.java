@@ -17,6 +17,7 @@
 
 package org.apache.flink.streaming.connectors.kinesis.config;
 
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.streaming.connectors.kinesis.FlinkKinesisConsumer;
 import org.apache.flink.streaming.connectors.kinesis.internals.ShardConsumer;
 import org.apache.flink.streaming.connectors.kinesis.model.SentinelSequenceNumber;
@@ -26,6 +27,7 @@ import com.amazonaws.services.kinesis.model.ShardIteratorType;
 /**
  * Optional consumer specific configuration keys and default values for {@link FlinkKinesisConsumer}.
  */
+@PublicEvolving
 public class ConsumerConfigConstants extends AWSConfigConstants {
 
 	/**
@@ -119,7 +121,7 @@ public class ConsumerConfigConstants extends AWSConfigConstants {
 
 	public static final double DEFAULT_STREAM_DESCRIBE_BACKOFF_EXPONENTIAL_CONSTANT = 1.5;
 
-	public static final int DEFAULT_SHARD_GETRECORDS_MAX = 100;
+	public static final int DEFAULT_SHARD_GETRECORDS_MAX = 10000;
 
 	public static final int DEFAULT_SHARD_GETRECORDS_RETRIES = 3;
 
@@ -129,7 +131,7 @@ public class ConsumerConfigConstants extends AWSConfigConstants {
 
 	public static final double DEFAULT_SHARD_GETRECORDS_BACKOFF_EXPONENTIAL_CONSTANT = 1.5;
 
-	public static final long DEFAULT_SHARD_GETRECORDS_INTERVAL_MILLIS = 0L;
+	public static final long DEFAULT_SHARD_GETRECORDS_INTERVAL_MILLIS = 200L;
 
 	public static final int DEFAULT_SHARD_GETITERATOR_RETRIES = 3;
 

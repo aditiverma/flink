@@ -19,6 +19,8 @@
 package org.apache.flink.streaming.connectors.kafka;
 
 import org.apache.flink.core.testutils.OneShotLatch;
+import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.functions.AssignerWithPeriodicWatermarks;
 import org.apache.flink.streaming.api.functions.AssignerWithPunctuatedWatermarks;
@@ -28,9 +30,10 @@ import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.connectors.kafka.config.OffsetCommitMode;
 import org.apache.flink.streaming.connectors.kafka.internals.AbstractFetcher;
+import org.apache.flink.streaming.connectors.kafka.internals.AbstractPartitionDiscoverer;
 import org.apache.flink.streaming.connectors.kafka.internals.KafkaTopicPartition;
 import org.apache.flink.streaming.connectors.kafka.internals.KafkaTopicPartitionStateSentinel;
-import org.apache.flink.streaming.runtime.tasks.OperatorStateHandles;
+import org.apache.flink.streaming.connectors.kafka.internals.KafkaTopicsDescriptor;
 import org.apache.flink.streaming.util.AbstractStreamOperatorTestHarness;
 import org.apache.flink.streaming.util.OperatorSnapshotUtil;
 import org.apache.flink.streaming.util.migration.MigrationTestUtil;
@@ -54,10 +57,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Mockito.doAnswer;
+import static org.junit.Assert.fail;
+import static org.junit.Assume.assumeTrue;
+import static org.mockito.Matchers.any;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import static org.powermock.api.mockito.PowerMockito.doAnswer;
+import static org.powermock.api.mockito.PowerMockito.when;
 
 /**
  * Tests for checking whether {@link FlinkKafkaConsumerBase} can restore from snapshots that were
@@ -86,7 +93,7 @@ public class FlinkKafkaConsumerBaseMigrationTest {
 
 	@Parameterized.Parameters(name = "Migration Savepoint: {0}")
 	public static Collection<MigrationVersion> parameters () {
-		return Arrays.asList(MigrationVersion.v1_1, MigrationVersion.v1_2, MigrationVersion.v1_3);
+		return Arrays.asList(MigrationVersion.v1_2, MigrationVersion.v1_3, MigrationVersion.v1_4);
 	}
 
 	public FlinkKafkaConsumerBaseMigrationTest(MigrationVersion testMigrateVersion) {
@@ -122,7 +129,8 @@ public class FlinkKafkaConsumerBaseMigrationTest {
 
 		final List<KafkaTopicPartition> partitions = new ArrayList<>(PARTITION_STATE.keySet());
 
-		final DummyFlinkKafkaConsumer<String> consumerFunction = new DummyFlinkKafkaConsumer<>(fetcher, partitions);
+		final DummyFlinkKafkaConsumer<String> consumerFunction =
+			new DummyFlinkKafkaConsumer<>(fetcher, partitions, FlinkKafkaConsumerBase.PARTITION_DISCOVERY_DISABLED);
 
 		StreamSource<String, DummyFlinkKafkaConsumer<String>> consumerOperator =
 				new StreamSource<>(consumerFunction);
@@ -161,7 +169,7 @@ public class FlinkKafkaConsumerBaseMigrationTest {
 			latch.await();
 		}
 
-		final OperatorStateHandles snapshot;
+		final OperatorSubtaskState snapshot;
 		synchronized (testHarness.getCheckpointLock()) {
 			snapshot = testHarness.snapshot(0L, 0L);
 		}
@@ -178,7 +186,9 @@ public class FlinkKafkaConsumerBaseMigrationTest {
 	@Test
 	public void testRestoreFromEmptyStateNoPartitions() throws Exception {
 		final DummyFlinkKafkaConsumer<String> consumerFunction =
-				new DummyFlinkKafkaConsumer<>(Collections.<KafkaTopicPartition>emptyList());
+				new DummyFlinkKafkaConsumer<>(
+					Collections.<KafkaTopicPartition>emptyList(),
+					FlinkKafkaConsumerBase.PARTITION_DISCOVERY_DISABLED);
 
 		StreamSource<String, DummyFlinkKafkaConsumer<String>> consumerOperator = new StreamSource<>(consumerFunction);
 
@@ -203,7 +213,7 @@ public class FlinkKafkaConsumerBaseMigrationTest {
 		assertTrue(consumerFunction.getSubscribedPartitionsToStartOffsets().isEmpty());
 
 		// assert that no state was restored
-		assertTrue(consumerFunction.getRestoredState() == null);
+		assertTrue(consumerFunction.getRestoredState().isEmpty());
 
 		consumerOperator.close();
 		consumerOperator.cancel();
@@ -217,7 +227,8 @@ public class FlinkKafkaConsumerBaseMigrationTest {
 	public void testRestoreFromEmptyStateWithPartitions() throws Exception {
 		final List<KafkaTopicPartition> partitions = new ArrayList<>(PARTITION_STATE.keySet());
 
-		final DummyFlinkKafkaConsumer<String> consumerFunction = new DummyFlinkKafkaConsumer<>(partitions);
+		final DummyFlinkKafkaConsumer<String> consumerFunction =
+			new DummyFlinkKafkaConsumer<>(partitions, FlinkKafkaConsumerBase.PARTITION_DISCOVERY_DISABLED);
 
 		StreamSource<String, DummyFlinkKafkaConsumer<String>> consumerOperator =
 				new StreamSource<>(consumerFunction);
@@ -238,19 +249,25 @@ public class FlinkKafkaConsumerBaseMigrationTest {
 
 		testHarness.open();
 
-		// the expected state in "kafka-consumer-migration-test-flink*-empty-state-snapshot";
-		// since the state is empty, the consumer should reflect on the startup mode to determine start offsets.
+		// the expected state in "kafka-consumer-migration-test-flink1.2-snapshot-empty-state";
+		// all new partitions after the snapshot are considered as partitions that were created while the
+		// consumer wasn't running, and should start from the earliest offset.
 		final HashMap<KafkaTopicPartition, Long> expectedSubscribedPartitionsWithStartOffsets = new HashMap<>();
 		for (KafkaTopicPartition partition : PARTITION_STATE.keySet()) {
-			expectedSubscribedPartitionsWithStartOffsets.put(partition, KafkaTopicPartitionStateSentinel.GROUP_OFFSET);
+			expectedSubscribedPartitionsWithStartOffsets.put(partition, KafkaTopicPartitionStateSentinel.EARLIEST_OFFSET);
 		}
 
 		// assert that there are partitions and is identical to expected list
 		assertTrue(consumerFunction.getSubscribedPartitionsToStartOffsets() != null);
 		assertTrue(!consumerFunction.getSubscribedPartitionsToStartOffsets().isEmpty());
-		Assert.assertEquals(expectedSubscribedPartitionsWithStartOffsets, consumerFunction.getSubscribedPartitionsToStartOffsets());
+		assertEquals(expectedSubscribedPartitionsWithStartOffsets, consumerFunction.getSubscribedPartitionsToStartOffsets());
 
-		assertTrue(consumerFunction.getRestoredState() == null);
+		// the new partitions should have been considered as restored state
+		assertTrue(consumerFunction.getRestoredState() != null);
+		assertTrue(!consumerFunction.getSubscribedPartitionsToStartOffsets().isEmpty());
+		for (Map.Entry<KafkaTopicPartition, Long> expectedEntry : expectedSubscribedPartitionsWithStartOffsets.entrySet()) {
+			assertEquals(expectedEntry.getValue(), consumerFunction.getRestoredState().get(expectedEntry.getKey()));
+		}
 
 		consumerOperator.close();
 		consumerOperator.cancel();
@@ -264,7 +281,8 @@ public class FlinkKafkaConsumerBaseMigrationTest {
 	public void testRestore() throws Exception {
 		final List<KafkaTopicPartition> partitions = new ArrayList<>(PARTITION_STATE.keySet());
 
-		final DummyFlinkKafkaConsumer<String> consumerFunction = new DummyFlinkKafkaConsumer<>(partitions);
+		final DummyFlinkKafkaConsumer<String> consumerFunction =
+			new DummyFlinkKafkaConsumer<>(partitions, FlinkKafkaConsumerBase.PARTITION_DISCOVERY_DISABLED);
 
 		StreamSource<String, DummyFlinkKafkaConsumer<String>> consumerOperator =
 				new StreamSource<>(consumerFunction);
@@ -290,14 +308,50 @@ public class FlinkKafkaConsumerBaseMigrationTest {
 		assertTrue(!consumerFunction.getSubscribedPartitionsToStartOffsets().isEmpty());
 
 		// on restore, subscribedPartitionsToStartOffsets should be identical to the restored state
-		Assert.assertEquals(PARTITION_STATE, consumerFunction.getSubscribedPartitionsToStartOffsets());
+		assertEquals(PARTITION_STATE, consumerFunction.getSubscribedPartitionsToStartOffsets());
 
 		// assert that state is correctly restored from legacy checkpoint
 		assertTrue(consumerFunction.getRestoredState() != null);
-		Assert.assertEquals(PARTITION_STATE, consumerFunction.getRestoredState());
+		assertEquals(PARTITION_STATE, consumerFunction.getRestoredState());
 
 		consumerOperator.close();
 		consumerOperator.cancel();
+	}
+
+	/**
+	 * Test restoring from savepoints before version Flink 1.3 should fail if discovery is enabled.
+	 */
+	@Test
+	public void testRestoreFailsWithNonEmptyPreFlink13StatesIfDiscoveryEnabled() throws Exception {
+		assumeTrue(testMigrateVersion == MigrationVersion.v1_3 || testMigrateVersion == MigrationVersion.v1_2);
+
+		final List<KafkaTopicPartition> partitions = new ArrayList<>(PARTITION_STATE.keySet());
+
+		final DummyFlinkKafkaConsumer<String> consumerFunction =
+			new DummyFlinkKafkaConsumer<>(partitions, 1000L); // discovery enabled
+
+		StreamSource<String, DummyFlinkKafkaConsumer<String>> consumerOperator =
+			new StreamSource<>(consumerFunction);
+
+		final AbstractStreamOperatorTestHarness<String> testHarness =
+			new AbstractStreamOperatorTestHarness<>(consumerOperator, 1, 1, 0);
+
+		testHarness.setTimeCharacteristic(TimeCharacteristic.ProcessingTime);
+
+		testHarness.setup();
+
+		// restore state from binary snapshot file; should fail since discovery is enabled
+		try {
+			MigrationTestUtil.restoreFromSnapshot(
+				testHarness,
+				OperatorSnapshotUtil.getResourceFilename(
+					"kafka-consumer-migration-test-flink" + testMigrateVersion + "-snapshot"),
+				testMigrateVersion);
+
+			fail("Restore from savepoints from version before Flink 1.3.x should have failed if discovery is enabled.");
+		} catch (Exception e) {
+			Assert.assertTrue(e instanceof IllegalArgumentException);
+		}
 	}
 
 	// ------------------------------------------------------------------------
@@ -310,16 +364,24 @@ public class FlinkKafkaConsumerBaseMigrationTest {
 		private final AbstractFetcher<T, ?> fetcher;
 
 		@SuppressWarnings("unchecked")
-		DummyFlinkKafkaConsumer(AbstractFetcher<T, ?> fetcher, List<KafkaTopicPartition> partitions) {
-			super(Arrays.asList("dummy-topic"), (KeyedDeserializationSchema< T >) mock(KeyedDeserializationSchema.class));
+		DummyFlinkKafkaConsumer(
+				AbstractFetcher<T, ?> fetcher,
+				List<KafkaTopicPartition> partitions,
+				long discoveryInterval) {
+
+			super(
+				Arrays.asList("dummy-topic"),
+				null,
+				(KeyedDeserializationSchema< T >) mock(KeyedDeserializationSchema.class),
+				discoveryInterval,
+				false);
+
 			this.fetcher = fetcher;
 			this.partitions = partitions;
 		}
 
-		DummyFlinkKafkaConsumer(List<KafkaTopicPartition> partitions) {
-			super(Arrays.asList("dummy-topic"), (KeyedDeserializationSchema< T >) mock(KeyedDeserializationSchema.class));
-			this.fetcher = mock(AbstractFetcher.class);
-			this.partitions = partitions;
+		DummyFlinkKafkaConsumer(List<KafkaTopicPartition> partitions, long discoveryInterval) {
+			this(mock(AbstractFetcher.class), partitions, discoveryInterval);
 		}
 
 		@Override
@@ -329,18 +391,40 @@ public class FlinkKafkaConsumerBaseMigrationTest {
 				SerializedValue<AssignerWithPeriodicWatermarks<T>> watermarksPeriodic,
 				SerializedValue<AssignerWithPunctuatedWatermarks<T>> watermarksPunctuated,
 				StreamingRuntimeContext runtimeContext,
-				OffsetCommitMode offsetCommitMode) throws Exception {
+				OffsetCommitMode offsetCommitMode,
+				MetricGroup consumerMetricGroup,
+				boolean useMetrics) throws Exception {
 			return fetcher;
 		}
 
 		@Override
-		protected List<KafkaTopicPartition> getKafkaPartitions(List<String> topics) {
-			return partitions;
+		protected AbstractPartitionDiscoverer createPartitionDiscoverer(
+				KafkaTopicsDescriptor topicsDescriptor,
+				int indexOfThisSubtask,
+				int numParallelSubtasks) {
+
+			AbstractPartitionDiscoverer mockPartitionDiscoverer = mock(AbstractPartitionDiscoverer.class);
+
+			try {
+				when(mockPartitionDiscoverer.discoverPartitions()).thenReturn(partitions);
+			} catch (Exception e) {
+				// ignore
+			}
+			when(mockPartitionDiscoverer.setAndCheckDiscoveredPartition(any(KafkaTopicPartition.class))).thenReturn(true);
+
+			return mockPartitionDiscoverer;
 		}
 
 		@Override
 		protected boolean getIsAutoCommitEnabled() {
 			return false;
+		}
+
+		@Override
+		protected Map<KafkaTopicPartition, Long> fetchOffsetsWithTimestamp(
+				Collection<KafkaTopicPartition> partitions,
+				long timestamp) {
+			throw new UnsupportedOperationException();
 		}
 	}
 

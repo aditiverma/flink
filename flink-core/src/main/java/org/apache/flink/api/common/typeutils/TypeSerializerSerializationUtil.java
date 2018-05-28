@@ -29,19 +29,15 @@ import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 import org.apache.flink.util.InstantiationUtil;
 import org.apache.flink.util.Preconditions;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InvalidClassException;
-import java.io.ObjectInputStream;
-import java.io.ObjectStreamClass;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * Utility methods for serialization of {@link TypeSerializer} and {@link TypeSerializerConfigSnapshot}.
@@ -50,67 +46,6 @@ import java.util.Set;
 public class TypeSerializerSerializationUtil {
 
 	private static final Logger LOG = LoggerFactory.getLogger(TypeSerializerSerializationUtil.class);
-
-	/**
-	 * This is maintained as a temporary workaround for FLINK-6869.
-	 *
-	 * <p>Before 1.3, the Scala serializers did not specify the serialVersionUID.
-	 * Although since 1.3 they are properly specified, we still have to ignore them for now
-	 * as their previous serialVersionUIDs will vary depending on the Scala version.
-	 *
-	 * <p>This can be removed once 1.2 is no longer supported.
-	 */
-	private static Set<String> scalaSerializerClassnames = new HashSet<>();
-	static {
-		scalaSerializerClassnames.add("org.apache.flink.api.scala.typeutils.TraversableSerializer");
-		scalaSerializerClassnames.add("org.apache.flink.api.scala.typeutils.CaseClassSerializer");
-		scalaSerializerClassnames.add("org.apache.flink.api.scala.typeutils.EitherSerializer");
-		scalaSerializerClassnames.add("org.apache.flink.api.scala.typeutils.EnumValueSerializer");
-		scalaSerializerClassnames.add("org.apache.flink.api.scala.typeutils.OptionSerializer");
-		scalaSerializerClassnames.add("org.apache.flink.api.scala.typeutils.TrySerializer");
-		scalaSerializerClassnames.add("org.apache.flink.api.scala.typeutils.EitherSerializer");
-		scalaSerializerClassnames.add("org.apache.flink.api.scala.typeutils.UnitSerializer");
-	}
-
-	/**
-	 * An {@link ObjectInputStream} that ignores serialVersionUID mismatches when deserializing objects of
-	 * anonymous classes or our Scala serializer classes.
-	 *
-	 * <p>The {@link TypeSerializerSerializationProxy} uses this specific object input stream to read serializers,
-	 * so that mismatching serialVersionUIDs of anonymous classes / Scala serializers are ignored.
-	 * This is a required workaround to maintain backwards compatibility for our pre-1.3 Scala serializers.
-	 * See FLINK-6869 for details.
-	 *
-	 * @see <a href="https://issues.apache.org/jira/browse/FLINK-6869">FLINK-6869</a>
-	 */
-	public static class SerialUIDMismatchTolerantInputStream extends InstantiationUtil.ClassLoaderObjectInputStream {
-
-		public SerialUIDMismatchTolerantInputStream(InputStream in, ClassLoader cl) throws IOException {
-			super(in, cl);
-		}
-
-		@Override
-		protected ObjectStreamClass readClassDescriptor() throws IOException, ClassNotFoundException {
-			ObjectStreamClass streamClassDescriptor = super.readClassDescriptor();
-
-			Class localClass = resolveClass(streamClassDescriptor);
-			if (scalaSerializerClassnames.contains(localClass.getName()) || localClass.isAnonymousClass()
-				// isAnonymousClass does not work for anonymous Scala classes; additionally check by classname
-				|| localClass.getName().contains("$anon$") || localClass.getName().contains("$anonfun")) {
-
-				ObjectStreamClass localClassDescriptor = ObjectStreamClass.lookup(localClass);
-				if (localClassDescriptor != null
-					&& localClassDescriptor.getSerialVersionUID() != streamClassDescriptor.getSerialVersionUID()) {
-					LOG.warn("Ignoring serialVersionUID mismatch for anonymous class {}; was {}, now {}.",
-						streamClassDescriptor.getName(), streamClassDescriptor.getSerialVersionUID(), localClassDescriptor.getSerialVersionUID());
-
-					streamClassDescriptor = localClassDescriptor;
-				}
-			}
-
-			return streamClassDescriptor;
-		}
-	}
 
 	/**
 	 * Writes a {@link TypeSerializer} to the provided data output view.
@@ -433,8 +368,8 @@ public class TypeSerializerSerializationUtil {
 
 			ClassLoader previousClassLoader = Thread.currentThread().getContextClassLoader();
 			try (
-				SerialUIDMismatchTolerantInputStream ois =
-					new SerialUIDMismatchTolerantInputStream(new ByteArrayInputStream(buffer), userClassLoader)) {
+				InstantiationUtil.FailureTolerantObjectInputStream ois =
+					new InstantiationUtil.FailureTolerantObjectInputStream(new ByteArrayInputStream(buffer), userClassLoader)) {
 
 				Thread.currentThread().setContextClassLoader(userClassLoader);
 				typeSerializer = (TypeSerializer<T>) ois.readObject();

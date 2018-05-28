@@ -18,12 +18,10 @@
 
 package org.apache.flink.runtime.client;
 
-import akka.actor.ActorRef;
-import akka.actor.Props;
-import akka.actor.Status;
-import akka.dispatch.Futures;
+import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.AkkaOptions;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.runtime.akka.AkkaJobManagerGateway;
 import org.apache.flink.runtime.akka.ListeningBehaviour;
 import org.apache.flink.runtime.instance.ActorGateway;
 import org.apache.flink.runtime.instance.AkkaActorGateway;
@@ -32,11 +30,19 @@ import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
 import org.apache.flink.runtime.messages.JobClientMessages;
 import org.apache.flink.runtime.messages.JobClientMessages.SubmitJobAndWait;
 import org.apache.flink.runtime.messages.JobManagerMessages;
-import org.apache.flink.runtime.util.SerializedThrowable;
-import scala.concurrent.duration.FiniteDuration;
+import org.apache.flink.util.ExceptionUtils;
+import org.apache.flink.util.SerializedThrowable;
+
+import akka.actor.ActorRef;
+import akka.actor.Props;
+import akka.actor.Status;
 
 import java.io.IOException;
-import java.util.concurrent.Callable;
+import java.net.InetSocketAddress;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+
+import scala.concurrent.duration.FiniteDuration;
 
 
 /**
@@ -44,11 +50,11 @@ import java.util.concurrent.Callable;
  */
 public class JobSubmissionClientActor extends JobClientActor {
 
-	/** JobGraph which shall be submitted to the JobManager */
+	/** JobGraph which shall be submitted to the JobManager. */
 	private JobGraph jobGraph;
-	/** true if a SubmitJobSuccess message has been received */
+	/** true if a SubmitJobSuccess message has been received. */
 	private boolean jobSuccessfullySubmitted = false;
-	/** The cluster configuration */
+	/** The cluster configuration. */
 	private final Configuration clientConfig;
 
 	public JobSubmissionClientActor(
@@ -59,7 +65,6 @@ public class JobSubmissionClientActor extends JobClientActor {
 		super(leaderRetrievalService, timeout, sysoutUpdates);
 		this.clientConfig = clientConfig;
 	}
-
 
 	@Override
 	public void connectedToJobManager() {
@@ -137,52 +142,70 @@ public class JobSubmissionClientActor extends JobClientActor {
 		LOG.info("Sending message to JobManager {} to submit job {} ({}) and wait for progress",
 			jobManager.path().toString(), jobGraph.getName(), jobGraph.getJobID());
 
-		Futures.future(new Callable<Object>() {
-			@Override
-			public Object call() throws Exception {
-				ActorGateway jobManagerGateway = new AkkaActorGateway(jobManager, leaderSessionID);
+		final ActorGateway jobManagerGateway = new AkkaActorGateway(jobManager, leaderSessionID);
+		final AkkaJobManagerGateway akkaJobManagerGateway = new AkkaJobManagerGateway(jobManagerGateway);
 
-				LOG.info("Upload jar files to job manager {}.", jobManager.path());
+		LOG.info("Upload jar files to job manager {}.", jobManager.path());
 
+		final CompletableFuture<InetSocketAddress> blobServerAddressFuture = JobClient.retrieveBlobServerAddress(
+			akkaJobManagerGateway,
+			Time.milliseconds(timeout.toMillis()));
+
+		final CompletableFuture<Void> jarUploadFuture = blobServerAddressFuture.thenAcceptAsync(
+			(InetSocketAddress blobServerAddress) -> {
 				try {
-					jobGraph.uploadUserJars(jobManagerGateway, timeout, clientConfig);
-				} catch (IOException exception) {
-					getSelf().tell(
-						decorateMessage(new JobManagerMessages.JobResultFailure(
-							new SerializedThrowable(
-								new JobSubmissionException(
-									jobGraph.getJobID(),
-									"Could not upload the jar files to the job manager.",
-									exception)
-							)
-						)),
-						ActorRef.noSender()
-					);
+					jobGraph.uploadUserJars(blobServerAddress, clientConfig);
+				} catch (IOException e) {
+					throw new CompletionException(
+						new JobSubmissionException(
+							jobGraph.getJobID(),
+							"Could not upload the jar files to the job manager.",
+							e));
 				}
 
-				LOG.info("Submit job to the job manager {}.", jobManager.path());
+				try {
+					jobGraph.uploadUserArtifacts(blobServerAddress, clientConfig);
+				} catch (IOException e) {
+					throw new CompletionException(
+						new JobSubmissionException(
+							jobGraph.getJobID(),
+							"Could not upload custom user artifacts to the job manager.",
+							e));
+				}
+			},
+			getContext().dispatcher());
 
-				jobManager.tell(
-					decorateMessage(
-						new JobManagerMessages.SubmitJob(
-							jobGraph,
-							ListeningBehaviour.EXECUTION_RESULT_AND_STATE_CHANGES)),
-					getSelf());
+		jarUploadFuture
+			.thenAccept(
+				(Void ignored) -> {
+					LOG.info("Submit job to the job manager {}.", jobManager.path());
 
-				// issue a SubmissionTimeout message to check that we submit the job within
-				// the given timeout
-				getContext().system().scheduler().scheduleOnce(
-					timeout,
-					getSelf(),
-					decorateMessage(JobClientMessages.getSubmissionTimeout()),
-					getContext().dispatcher(),
-					ActorRef.noSender());
+					jobManager.tell(
+						decorateMessage(
+							new JobManagerMessages.SubmitJob(
+								jobGraph,
+								ListeningBehaviour.EXECUTION_RESULT_AND_STATE_CHANGES)),
+						getSelf());
 
-				return null;
-			}
-		}, getContext().dispatcher());
+					// issue a SubmissionTimeout message to check that we submit the job within
+					// the given timeout
+					getContext().system().scheduler().scheduleOnce(
+						timeout,
+						getSelf(),
+						decorateMessage(JobClientMessages.getSubmissionTimeout()),
+						getContext().dispatcher(),
+						ActorRef.noSender());
+				})
+			.whenComplete(
+				(Void ignored, Throwable throwable) -> {
+					if (throwable != null) {
+						getSelf().tell(
+							decorateMessage(new JobManagerMessages.JobResultFailure(
+								new SerializedThrowable(ExceptionUtils.stripCompletionException(throwable)))),
+							ActorRef.noSender());
+					}
+				});
 	}
-
 
 	public static Props createActorProps(
 			LeaderRetrievalService leaderRetrievalService,

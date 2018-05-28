@@ -18,10 +18,14 @@
 
 package org.apache.flink.test.checkpointing;
 
+/**
+ * Integration tests for incremental RocksDB backend.
+ */
 public class IncrementalRocksDbBackendEventTimeWindowCheckpointingITCase extends AbstractEventTimeWindowCheckpointingITCase {
 
-	public IncrementalRocksDbBackendEventTimeWindowCheckpointingITCase() {
-		super(StateBackendEnum.ROCKSDB_INCREMENTAL);
+	@Override
+	protected StateBackendEnum getStateBackend() {
+		return StateBackendEnum.ROCKSDB_INCREMENTAL;
 	}
 
 	@Override

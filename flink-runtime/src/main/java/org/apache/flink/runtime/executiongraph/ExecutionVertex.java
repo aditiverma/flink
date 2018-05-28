@@ -22,16 +22,20 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.Archiveable;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.time.Time;
+import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.runtime.JobException;
-import org.apache.flink.runtime.concurrent.Future;
+import org.apache.flink.runtime.blob.PermanentBlobKey;
+import org.apache.flink.runtime.checkpoint.JobManagerTaskRestore;
+import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.deployment.InputChannelDeploymentDescriptor;
 import org.apache.flink.runtime.deployment.InputGateDeploymentDescriptor;
 import org.apache.flink.runtime.deployment.PartialInputChannelDeploymentDescriptor;
 import org.apache.flink.runtime.deployment.ResultPartitionDeploymentDescriptor;
 import org.apache.flink.runtime.deployment.TaskDeploymentDescriptor;
 import org.apache.flink.runtime.execution.ExecutionState;
+import org.apache.flink.runtime.jobmaster.LogicalSlot;
 import org.apache.flink.runtime.instance.SimpleSlot;
-import org.apache.flink.runtime.instance.SlotProvider;
+import org.apache.flink.runtime.jobmaster.slotpool.SlotProvider;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.jobgraph.DistributionPattern;
@@ -39,21 +43,24 @@ import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
 import org.apache.flink.runtime.jobgraph.JobEdge;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
-import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.runtime.jobmanager.scheduler.CoLocationConstraint;
 import org.apache.flink.runtime.jobmanager.scheduler.CoLocationGroup;
+import org.apache.flink.runtime.jobmanager.scheduler.LocationPreferenceConstraint;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
-import org.apache.flink.runtime.state.TaskStateHandles;
 import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
 import org.apache.flink.runtime.util.EvictingBoundedList;
+import org.apache.flink.types.Either;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.SerializedValue;
 
 import org.slf4j.Logger;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -61,6 +68,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 import static org.apache.flink.runtime.execution.ExecutionState.FINISHED;
 
@@ -264,7 +272,11 @@ public class ExecutionVertex implements AccessExecutionVertex, Archiveable<Archi
 		return currentExecution.getFailureCause();
 	}
 
-	public SimpleSlot getCurrentAssignedResource() {
+	public CompletableFuture<TaskManagerLocation> getCurrentTaskManagerLocationFuture() {
+		return currentExecution.getTaskManagerLocationFuture();
+	}
+
+	public LogicalSlot getCurrentAssignedResource() {
 		return currentExecution.getAssignedResource();
 	}
 
@@ -284,6 +296,18 @@ public class ExecutionVertex implements AccessExecutionVertex, Archiveable<Archi
 		}
 	}
 
+	public Execution getLatestPriorExecution() {
+		synchronized (priorExecutions) {
+			final int size = priorExecutions.size();
+			if (size > 0) {
+				return priorExecutions.get(size - 1);
+			}
+			else {
+				return null;
+			}
+		}
+	}
+
 	/**
 	 * Gets the location where the latest completed/canceled/failed execution of the vertex's
 	 * task happened.
@@ -291,15 +315,13 @@ public class ExecutionVertex implements AccessExecutionVertex, Archiveable<Archi
 	 * @return The latest prior execution location, or null, if there is none, yet.
 	 */
 	public TaskManagerLocation getLatestPriorLocation() {
-		synchronized (priorExecutions) {
-			final int size = priorExecutions.size();
-			if (size > 0) {
-				return priorExecutions.get(size - 1).getAssignedResourceLocation();
-			}
-			else {
-				return null;
-			}
-		}
+		Execution latestPriorExecution = getLatestPriorExecution();
+		return latestPriorExecution != null ? latestPriorExecution.getAssignedResourceLocation() : null;
+	}
+
+	public AllocationID getLatestPriorAllocation() {
+		Execution latestPriorExecution = getLatestPriorExecution();
+		return latestPriorExecution != null ? latestPriorExecution.getAssignedAllocationID() : null;
 	}
 
 	EvictingBoundedList<Execution> getCopyOfPriorExecutionsList() {
@@ -438,13 +460,13 @@ public class ExecutionVertex implements AccessExecutionVertex, Archiveable<Archi
 	 *     <li>Repeated executions of stateful tasks try to co-locate the execution with its state.
 	 * </ul>
 	 * 
-	 * @return The preferred excution locations for the execution attempt.
+	 * @return The preferred execution locations for the execution attempt.
 	 * 
 	 * @see #getPreferredLocationsBasedOnState()
 	 * @see #getPreferredLocationsBasedOnInputs() 
 	 */
-	public Iterable<TaskManagerLocation> getPreferredLocations() {
-		Iterable<TaskManagerLocation> basedOnState = getPreferredLocationsBasedOnState();
+	public Collection<CompletableFuture<TaskManagerLocation>> getPreferredLocations() {
+		Collection<CompletableFuture<TaskManagerLocation>> basedOnState = getPreferredLocationsBasedOnState();
 		return basedOnState != null ? basedOnState : getPreferredLocationsBasedOnInputs();
 	}
 	
@@ -452,13 +474,13 @@ public class ExecutionVertex implements AccessExecutionVertex, Archiveable<Archi
 	 * Gets the preferred location to execute the current task execution attempt, based on the state
 	 * that the execution attempt will resume.
 	 * 
-	 * @return A size-one iterable with the location preference, or null, if there is no
+	 * @return A size-one collection with the location preference, or null, if there is no
 	 *         location preference based on the state.
 	 */
-	public Iterable<TaskManagerLocation> getPreferredLocationsBasedOnState() {
+	public Collection<CompletableFuture<TaskManagerLocation>> getPreferredLocationsBasedOnState() {
 		TaskManagerLocation priorLocation;
-		if (currentExecution.getTaskStateHandles() != null && (priorLocation = getLatestPriorLocation()) != null) {
-			return Collections.singleton(priorLocation);
+		if (currentExecution.getTaskRestore() != null && (priorLocation = getLatestPriorLocation()) != null) {
+			return Collections.singleton(CompletableFuture.completedFuture(priorLocation));
 		}
 		else {
 			return null;
@@ -474,14 +496,14 @@ public class ExecutionVertex implements AccessExecutionVertex, Archiveable<Archi
 	 * @return The preferred locations based in input streams, or an empty iterable,
 	 *         if there is no input-based preference.
 	 */
-	public Iterable<TaskManagerLocation> getPreferredLocationsBasedOnInputs() {
+	public Collection<CompletableFuture<TaskManagerLocation>> getPreferredLocationsBasedOnInputs() {
 		// otherwise, base the preferred locations on the input connections
 		if (inputEdges == null) {
 			return Collections.emptySet();
 		}
 		else {
-			Set<TaskManagerLocation> locations = new HashSet<>();
-			Set<TaskManagerLocation> inputLocations = new HashSet<>();
+			Set<CompletableFuture<TaskManagerLocation>> locations = new HashSet<>(getTotalNumberOfParallelSubtasks());
+			Set<CompletableFuture<TaskManagerLocation>> inputLocations = new HashSet<>(getTotalNumberOfParallelSubtasks());
 
 			// go over all inputs
 			for (int i = 0; i < inputEdges.length; i++) {
@@ -491,15 +513,13 @@ public class ExecutionVertex implements AccessExecutionVertex, Archiveable<Archi
 					// go over all input sources
 					for (int k = 0; k < sources.length; k++) {
 						// look-up assigned slot of input source
-						SimpleSlot sourceSlot = sources[k].getSource().getProducer().getCurrentAssignedResource();
-						if (sourceSlot != null) {
-							// add input location
-							inputLocations.add(sourceSlot.getTaskManagerLocation());
-							// inputs which have too many distinct sources are not considered
-							if (inputLocations.size() > MAX_DISTINCT_LOCATIONS_TO_CONSIDER) {
-								inputLocations.clear();
-								break;
-							}
+						CompletableFuture<TaskManagerLocation> locationFuture = sources[k].getSource().getProducer().getCurrentTaskManagerLocationFuture();
+						// add input location
+						inputLocations.add(locationFuture);
+						// inputs which have too many distinct sources are not considered
+						if (inputLocations.size() > MAX_DISTINCT_LOCATIONS_TO_CONSIDER) {
+							inputLocations.clear();
+							break;
 						}
 					}
 				}
@@ -512,7 +532,7 @@ public class ExecutionVertex implements AccessExecutionVertex, Archiveable<Archi
 				}
 			}
 
-			return locations.isEmpty() ? Collections.<TaskManagerLocation>emptyList() : locations;
+			return locations.isEmpty() ? Collections.emptyList() : locations;
 		}
 	}
 
@@ -592,24 +612,45 @@ public class ExecutionVertex implements AccessExecutionVertex, Archiveable<Archi
 		}
 	}
 
-	public boolean scheduleForExecution(SlotProvider slotProvider, boolean queued) {
-		return this.currentExecution.scheduleForExecution(slotProvider, queued);
+	/**
+	 * Schedules the current execution of this ExecutionVertex.
+	 *
+	 * @param slotProvider to allocate the slots from
+	 * @param queued if the allocation can be queued
+	 * @param locationPreferenceConstraint constraint for the location preferences
+	 * @return Future which is completed once the execution is deployed. The future
+	 * can also completed exceptionally.
+	 */
+	public CompletableFuture<Void> scheduleForExecution(
+			SlotProvider slotProvider,
+			boolean queued,
+			LocationPreferenceConstraint locationPreferenceConstraint) {
+		return this.currentExecution.scheduleForExecution(
+			slotProvider,
+			queued,
+			locationPreferenceConstraint);
 	}
 
+	@VisibleForTesting
 	public void deployToSlot(SimpleSlot slot) throws JobException {
-		this.currentExecution.deployToSlot(slot);
+		if (this.currentExecution.tryAssignResource(slot)) {
+			this.currentExecution.deploy();
+		} else {
+			throw new IllegalStateException("Could not assign resource " + slot + " to current execution " +
+				currentExecution + '.');
+		}
 	}
 
 	/**
 	 *  
 	 * @return A future that completes once the execution has reached its final state.
 	 */
-	public Future<ExecutionState> cancel() {
+	public CompletableFuture<?> cancel() {
 		// to avoid any case of mixup in the presence of concurrent calls,
 		// we copy a reference to the stack to make sure both calls go to the same Execution 
 		final Execution exec = this.currentExecution;
 		exec.cancel();
-		return exec.getTerminationFuture();
+		return exec.getReleaseFuture();
 	}
 
 	public void stop() {
@@ -718,8 +759,8 @@ public class ExecutionVertex implements AccessExecutionVertex, Archiveable<Archi
 	 */
 	TaskDeploymentDescriptor createDeploymentDescriptor(
 			ExecutionAttemptID executionId,
-			SimpleSlot targetSlot,
-			TaskStateHandles taskStateHandles,
+			LogicalSlot targetSlot,
+			@Nullable JobManagerTaskRestore taskRestore,
 			int attemptNumber) throws ExecutionGraphException {
 		
 		// Produced intermediate results
@@ -753,8 +794,10 @@ public class ExecutionVertex implements AccessExecutionVertex, Archiveable<Archi
 		
 		
 		for (ExecutionEdge[] edges : inputEdges) {
-			InputChannelDeploymentDescriptor[] partitions = InputChannelDeploymentDescriptor
-					.fromEdges(edges, targetSlot, lazyScheduling);
+			InputChannelDeploymentDescriptor[] partitions = InputChannelDeploymentDescriptor.fromEdges(
+				edges,
+				targetSlot.getTaskManagerLocation().getResourceID(),
+				lazyScheduling);
 
 			// If the produced partition has multiple consumers registered, we
 			// need to request the one matching our sub task index.
@@ -770,25 +813,44 @@ public class ExecutionVertex implements AccessExecutionVertex, Archiveable<Archi
 			consumedPartitions.add(new InputGateDeploymentDescriptor(resultId, partitionType, queueToRequest, partitions));
 		}
 
-		SerializedValue<JobInformation> serializedJobInformation = getExecutionGraph().getSerializedJobInformation();
-		SerializedValue<TaskInformation> serializedJobVertexInformation = null;
+		final Either<SerializedValue<JobInformation>, PermanentBlobKey> jobInformationOrBlobKey = getExecutionGraph().getJobInformationOrBlobKey();
+
+		final TaskDeploymentDescriptor.MaybeOffloaded<JobInformation> serializedJobInformation;
+
+		if (jobInformationOrBlobKey.isLeft()) {
+			serializedJobInformation = new TaskDeploymentDescriptor.NonOffloaded<>(jobInformationOrBlobKey.left());
+		} else {
+			serializedJobInformation = new TaskDeploymentDescriptor.Offloaded<>(jobInformationOrBlobKey.right());
+		}
+
+		final Either<SerializedValue<TaskInformation>, PermanentBlobKey> taskInformationOrBlobKey;
 
 		try {
-			serializedJobVertexInformation = jobVertex.getSerializedTaskInformation();
+			taskInformationOrBlobKey = jobVertex.getTaskInformationOrBlobKey();
 		} catch (IOException e) {
 			throw new ExecutionGraphException(
-					"Could not create a serialized JobVertexInformation for " + jobVertex.getJobVertexId(), e);
+				"Could not create a serialized JobVertexInformation for " +
+					jobVertex.getJobVertexId(), e);
+		}
+
+		final TaskDeploymentDescriptor.MaybeOffloaded<TaskInformation> serializedTaskInformation;
+
+		if (taskInformationOrBlobKey.isLeft()) {
+			serializedTaskInformation = new TaskDeploymentDescriptor.NonOffloaded<>(taskInformationOrBlobKey.left());
+		} else {
+			serializedTaskInformation = new TaskDeploymentDescriptor.Offloaded<>(taskInformationOrBlobKey.right());
 		}
 
 		return new TaskDeploymentDescriptor(
+			getJobId(),
 			serializedJobInformation,
-			serializedJobVertexInformation,
+			serializedTaskInformation,
 			executionId,
-			targetSlot.getAllocatedSlot().getSlotAllocationId(),
+			targetSlot.getAllocationId(),
 			subTaskIndex,
 			attemptNumber,
-			targetSlot.getRoot().getSlotNumber(),
-			taskStateHandles,
+			targetSlot.getPhysicalSlotNumber(),
+			taskRestore,
 			producedPartitions,
 			consumedPartitions);
 	}

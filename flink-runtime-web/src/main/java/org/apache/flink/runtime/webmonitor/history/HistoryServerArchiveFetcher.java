@@ -24,14 +24,15 @@ import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.history.FsJobArchivist;
+import org.apache.flink.runtime.rest.handler.legacy.JobsOverviewHandler;
 import org.apache.flink.runtime.util.ExecutorThreadFactory;
-import org.apache.flink.runtime.webmonitor.handlers.CurrentJobsOverviewHandler;
 import org.apache.flink.util.FileUtils;
 
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.JsonFactory;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.JsonGenerator;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -179,9 +180,7 @@ class HistoryServerArchiveFetcher {
 
 									// We overwrite existing files since this may be another attempt at fetching this archive.
 									// Existing files may be incomplete/corrupt.
-									if (Files.exists(targetPath)) {
-										Files.delete(targetPath);
-									}
+									Files.deleteIfExists(targetPath);
 
 									Files.createFile(target.toPath());
 									try (FileWriter fw = new FileWriter(target)) {
@@ -223,7 +222,7 @@ class HistoryServerArchiveFetcher {
 	}
 
 	/**
-	 * This method replicates the JSON response that would be given by the {@link CurrentJobsOverviewHandler} when
+	 * This method replicates the JSON response that would be given by the {@link JobsOverviewHandler} when
 	 * listing both running and finished jobs.
 	 *
 	 * <p>Every job archive contains a joboverview.json file containing the same structure. Since jobs are archived on

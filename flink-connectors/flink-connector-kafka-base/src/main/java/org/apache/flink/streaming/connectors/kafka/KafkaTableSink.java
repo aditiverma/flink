@@ -18,12 +18,14 @@
 
 package org.apache.flink.streaming.connectors.kafka;
 
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.connectors.kafka.partitioner.FlinkKafkaPartitioner;
-import org.apache.flink.streaming.util.serialization.SerializationSchema;
 import org.apache.flink.table.sinks.AppendStreamTableSink;
+import org.apache.flink.table.util.TableConnectorUtil;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Preconditions;
 
@@ -35,6 +37,7 @@ import java.util.Properties;
  * <p>The version-specific Kafka consumers need to extend this class and
  * override {@link #createKafkaProducer(String, Properties, SerializationSchema, FlinkKafkaPartitioner)}}.
  */
+@Internal
 public abstract class KafkaTableSink implements AppendStreamTableSink<Row> {
 
 	protected final String topic;
@@ -61,7 +64,7 @@ public abstract class KafkaTableSink implements AppendStreamTableSink<Row> {
 	}
 
 	/**
-	 * Returns the version-specifid Kafka producer.
+	 * Returns the version-specific Kafka producer.
 	 *
 	 * @param topic               Kafka topic to produce to.
 	 * @param properties          Properties for the Kafka producer.
@@ -77,10 +80,10 @@ public abstract class KafkaTableSink implements AppendStreamTableSink<Row> {
 	/**
 	 * Create serialization schema for converting table rows into bytes.
 	 *
-	 * @param fieldNames Field names in table rows.
+	 * @param rowSchema the schema of the row to serialize.
 	 * @return Instance of serialization schema
 	 */
-	protected abstract SerializationSchema<Row> createSerializationSchema(String[] fieldNames);
+	protected abstract SerializationSchema<Row> createSerializationSchema(RowTypeInfo rowSchema);
 
 	/**
 	 * Create a deep copy of this sink.
@@ -92,7 +95,9 @@ public abstract class KafkaTableSink implements AppendStreamTableSink<Row> {
 	@Override
 	public void emitDataStream(DataStream<Row> dataStream) {
 		FlinkKafkaProducerBase<Row> kafkaProducer = createKafkaProducer(topic, properties, serializationSchema, partitioner);
-		dataStream.addSink(kafkaProducer);
+		// always enable flush on checkpoint to achieve at-least-once if query runs with checkpointing enabled.
+		kafkaProducer.setFlushOnCheckpoint(true);
+		dataStream.addSink(kafkaProducer).name(TableConnectorUtil.generateRuntimeName(this.getClass(), fieldNames));
 	}
 
 	@Override
@@ -116,7 +121,9 @@ public abstract class KafkaTableSink implements AppendStreamTableSink<Row> {
 		copy.fieldTypes = Preconditions.checkNotNull(fieldTypes, "fieldTypes");
 		Preconditions.checkArgument(fieldNames.length == fieldTypes.length,
 			"Number of provided field names and types does not match.");
-		copy.serializationSchema = createSerializationSchema(fieldNames);
+
+		RowTypeInfo rowSchema = new RowTypeInfo(fieldTypes, fieldNames);
+		copy.serializationSchema = createSerializationSchema(rowSchema);
 
 		return copy;
 	}

@@ -58,6 +58,26 @@ import static org.mockito.Mockito.when;
  */
 public class ElasticsearchSinkBaseTest {
 
+	/**
+	 * Verifies that the collection given to the sink is not modified.
+	 */
+	@Test
+	public void testCollectionArgumentNotModified() {
+		Map<String, String> userConfig = new HashMap<>();
+		userConfig.put(ElasticsearchSinkBase.CONFIG_KEY_BULK_FLUSH_BACKOFF_DELAY, "1");
+		userConfig.put(ElasticsearchSinkBase.CONFIG_KEY_BULK_FLUSH_BACKOFF_ENABLE, "true");
+		userConfig.put(ElasticsearchSinkBase.CONFIG_KEY_BULK_FLUSH_BACKOFF_RETRIES, "1");
+		userConfig.put(ElasticsearchSinkBase.CONFIG_KEY_BULK_FLUSH_BACKOFF_TYPE, "CONSTANT");
+		userConfig.put(ElasticsearchSinkBase.CONFIG_KEY_BULK_FLUSH_INTERVAL_MS, "1");
+		userConfig.put(ElasticsearchSinkBase.CONFIG_KEY_BULK_FLUSH_MAX_ACTIONS, "1");
+		userConfig.put(ElasticsearchSinkBase.CONFIG_KEY_BULK_FLUSH_MAX_SIZE_MB, "1");
+
+		new DummyElasticsearchSink<>(
+			Collections.unmodifiableMap(userConfig),
+			new SimpleSinkFunction<String>(),
+			new NoOpFailureHandler());
+	}
+
 	/** Tests that any item failure in the listener callbacks is rethrown on an immediately following invoke call. */
 	@Test
 	public void testItemFailureRethrownOnInvoke() throws Throwable {
@@ -420,7 +440,7 @@ public class ElasticsearchSinkBaseTest {
 		/**
 		 * On non-manual flushes, i.e. when flush is called in the snapshot method implementation,
 		 * usages need to explicitly call this to allow the flush to continue. This is useful
-		 * to make sure that specific requests get added to the the next bulk request for flushing.
+		 * to make sure that specific requests get added to the next bulk request for flushing.
 		 */
 		public void continueFlush() {
 			flushLatch.trigger();

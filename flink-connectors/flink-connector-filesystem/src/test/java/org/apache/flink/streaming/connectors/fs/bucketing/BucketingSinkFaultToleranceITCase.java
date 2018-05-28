@@ -26,7 +26,6 @@ import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunctio
 import org.apache.flink.test.checkpointing.StreamFaultToleranceTestBase;
 import org.apache.flink.util.NetUtils;
 
-import com.google.common.collect.Sets;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.LocatedFileStatus;
@@ -52,6 +51,8 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static org.apache.flink.streaming.connectors.fs.bucketing.BucketingSinkTestUtils.IN_PROGRESS_SUFFIX;
+import static org.apache.flink.streaming.connectors.fs.bucketing.BucketingSinkTestUtils.PENDING_SUFFIX;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -72,9 +73,6 @@ public class BucketingSinkFaultToleranceITCase extends StreamFaultToleranceTestB
 	private static org.apache.hadoop.fs.FileSystem dfs;
 
 	private static String outPath;
-
-	private static final String PENDING_SUFFIX = ".pending";
-	private static final String IN_PROGRESS_SUFFIX = ".in-progress";
 
 	@BeforeClass
 	public static void createHDFS() throws IOException {
@@ -136,7 +134,7 @@ public class BucketingSinkFaultToleranceITCase extends StreamFaultToleranceTestB
 		// Keep a set of the message IDs that we read. The size must equal the read count and
 		// the NUM_STRINGS. If numRead is bigger than the size of the set we have seen some
 		// elements twice.
-		Set<Integer> readNumbers = Sets.newHashSet();
+		Set<Integer> readNumbers = new HashSet<>();
 
 		HashSet<String> uniqMessagesRead = new HashSet<>();
 		HashSet<String> messagesInCommittedFiles = new HashSet<>();

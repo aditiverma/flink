@@ -19,16 +19,16 @@
 package org.apache.flink.client.program;
 
 import org.apache.flink.configuration.AkkaOptions;
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.core.testutils.CommonTestUtils;
 import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.client.JobClientActorTest;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.highavailability.TestingHighAvailabilityServices;
 import org.apache.flink.runtime.instance.ActorGateway;
-import org.apache.flink.runtime.leaderelection.TestingLeaderRetrievalService;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalException;
+import org.apache.flink.runtime.leaderretrieval.SettableLeaderRetrievalService;
 import org.apache.flink.runtime.testingUtils.TestingUtils;
 import org.apache.flink.util.NetUtils;
 import org.apache.flink.util.TestLogger;
@@ -98,10 +98,10 @@ public class ClientConnectionTest extends TestLogger {
 		final Configuration config = new Configuration();
 		config.setString(AkkaOptions.ASK_TIMEOUT, ASK_STARTUP_TIMEOUT + " ms");
 		config.setString(AkkaOptions.LOOKUP_TIMEOUT, CONNECT_TIMEOUT + " ms");
-		config.setString(ConfigConstants.JOB_MANAGER_IPC_ADDRESS_KEY, unreachableEndpoint.getHostName());
-		config.setInteger(ConfigConstants.JOB_MANAGER_IPC_PORT_KEY, unreachableEndpoint.getPort());
+		config.setString(JobManagerOptions.ADDRESS, unreachableEndpoint.getHostName());
+		config.setInteger(JobManagerOptions.PORT, unreachableEndpoint.getPort());
 
-		ClusterClient client = new StandaloneClusterClient(config);
+		StandaloneClusterClient client = new StandaloneClusterClient(config);
 
 		try {
 			// we have to query the cluster status to start the connection attempts
@@ -136,11 +136,11 @@ public class ClientConnectionTest extends TestLogger {
 
 			final String expectedAddress = AkkaUtils.getAkkaURL(actorSystem, actorRef);
 
-			final TestingLeaderRetrievalService testingLeaderRetrievalService = new TestingLeaderRetrievalService(expectedAddress, leaderId);
+			final SettableLeaderRetrievalService settableLeaderRetrievalService = new SettableLeaderRetrievalService(expectedAddress, leaderId);
 
-			highAvailabilityServices.setJobMasterLeaderRetriever(HighAvailabilityServices.DEFAULT_JOB_ID, testingLeaderRetrievalService);
+			highAvailabilityServices.setJobMasterLeaderRetriever(HighAvailabilityServices.DEFAULT_JOB_ID, settableLeaderRetrievalService);
 
-			ClusterClient client = new StandaloneClusterClient(configuration, highAvailabilityServices);
+			StandaloneClusterClient client = new StandaloneClusterClient(configuration, highAvailabilityServices, true);
 
 			ActorGateway gateway = client.getJobManagerGateway();
 

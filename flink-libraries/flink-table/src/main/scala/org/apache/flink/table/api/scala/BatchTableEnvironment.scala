@@ -137,7 +137,25 @@ class BatchTableEnvironment(
     * @return The converted [[DataSet]].
     */
   def toDataSet[T: TypeInformation](table: Table): DataSet[T] = {
-    wrap[T](translate(table))(ClassTag.AnyRef.asInstanceOf[ClassTag[T]])
+    // Use the default batch query config.
+    wrap[T](translate(table, queryConfig))(ClassTag.AnyRef.asInstanceOf[ClassTag[T]])
+  }
+
+  /**
+    * Converts the given [[Table]] into a [[DataSet]] of a specified type.
+    *
+    * The fields of the [[Table]] are mapped to [[DataSet]] fields as follows:
+    * - [[org.apache.flink.types.Row]] and [[org.apache.flink.api.java.tuple.Tuple]]
+    * types: Fields are mapped by position, field types must match.
+    * - POJO [[DataSet]] types: Fields are mapped by field name, field types must match.
+    *
+    * @param table The [[Table]] to convert.
+    * @param queryConfig The configuration of the query to generate.
+    * @tparam T The type of the resulting [[DataSet]].
+    * @return The converted [[DataSet]].
+    */
+  def toDataSet[T: TypeInformation](table: Table, queryConfig: BatchQueryConfig): DataSet[T] = {
+    wrap[T](translate(table, queryConfig))(ClassTag.AnyRef.asInstanceOf[ClassTag[T]])
   }
 
   /**
@@ -161,7 +179,7 @@ class BatchTableEnvironment(
     * @tparam T The type of the output value.
     * @tparam ACC The type of aggregate accumulator.
     */
-  def registerFunction[T: TypeInformation, ACC](
+  def registerFunction[T: TypeInformation, ACC: TypeInformation](
       name: String,
       f: AggregateFunction[T, ACC])
   : Unit = {

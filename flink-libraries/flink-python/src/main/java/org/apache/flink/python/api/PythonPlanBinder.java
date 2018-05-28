@@ -31,6 +31,7 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.TupleTypeInfo;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
+import org.apache.flink.core.fs.FSDataOutputStream;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.python.api.PythonOperationInfo.DatasizeHint;
@@ -44,15 +45,19 @@ import org.apache.flink.python.api.functions.util.StringDeserializerMap;
 import org.apache.flink.python.api.functions.util.StringTupleDeserializerMap;
 import org.apache.flink.python.api.streaming.plan.PythonPlanStreamer;
 import org.apache.flink.python.api.util.SetCache;
-import org.apache.flink.runtime.filecache.FileCache;
+import org.apache.flink.util.FileUtils;
+import org.apache.flink.util.IOUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.UUID;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 import static org.apache.flink.python.api.PythonOperationInfo.DatasizeHint.HUGE;
 import static org.apache.flink.python.api.PythonOperationInfo.DatasizeHint.NONE;
@@ -71,11 +76,7 @@ public class PythonPlanBinder {
 	public static final String PLANBINDER_CONFIG_BCVAR_NAME_PREFIX = "PLANBINDER_BCVAR_";
 	public static final String PLAN_ARGUMENTS_KEY = "python.plan.arguments";
 
-	private static final String FLINK_PYTHON_REL_LOCAL_PATH = File.separator + "resources" + File.separator + "python";
-
 	private final Configuration operatorConfig;
-
-	private final String pythonLibraryPath;
 
 	private final String tmpPlanFilesDir;
 	private Path tmpDistributedDir;
@@ -91,14 +92,14 @@ public class PythonPlanBinder {
 	 * @throws Exception
 	 */
 	public static void main(String[] args) throws Exception {
-		if (args.length < 2) {
-			System.out.println("Usage: ./bin/pyflink<2/3>.[sh/bat] <pathToScript>[ <pathToPackage1>[ <pathToPackageX]][ - <parameter1>[ <parameterX>]]");
-			return;
-		}
-
 		Configuration globalConfig = GlobalConfiguration.loadConfiguration();
 		PythonPlanBinder binder = new PythonPlanBinder(globalConfig);
-		binder.runPlan(args);
+		try {
+			binder.runPlan(args);
+		} catch (Exception e) {
+			System.out.println("Failed to run plan: " + e.getMessage());
+			LOG.error("Failed to run plan.", e);
+		}
 	}
 
 	public PythonPlanBinder(Configuration globalConfig) {
@@ -108,13 +109,6 @@ public class PythonPlanBinder {
 			: System.getProperty("java.io.tmpdir") + File.separator + "flink_plan_" + UUID.randomUUID();
 
 		tmpDistributedDir = new Path(globalConfig.getString(PythonOptions.DC_TMP_DIR));
-
-		String flinkRootDir = System.getenv("FLINK_ROOT_DIR");
-		pythonLibraryPath = flinkRootDir != null
-				//command-line
-				? flinkRootDir + FLINK_PYTHON_REL_LOCAL_PATH
-				//testing
-				: new File(System.getProperty("user.dir"), "src/main/python/org/apache/flink/python/api").getAbsolutePath();
 
 		operatorConfig = new Configuration();
 		operatorConfig.setString(PythonOptions.PYTHON_BINARY_PATH, globalConfig.getString(PythonOptions.PYTHON_BINARY_PATH));
@@ -126,6 +120,10 @@ public class PythonPlanBinder {
 	}
 
 	void runPlan(String[] args) throws Exception {
+		if (args.length < 1) {
+			throw new IllegalArgumentException("Missing script file argument. Usage: ./bin/pyflink.[sh/bat] <pathToScript>[ <pathToPackage1>[ <pathToPackageX]][ - <parameter1>[ <parameterX>]]");
+		}
+
 		int split = 0;
 		for (int x = 0; x < args.length; x++) {
 			if (args[x].equals("-")) {
@@ -147,11 +145,28 @@ public class PythonPlanBinder {
 
 			operatorConfig.setString(PLAN_ARGUMENTS_KEY, planArguments);
 
-			// copy flink library, plan file and additional files to temporary location
+			Path planPath = new Path(planFile);
+			if (!FileSystem.getUnguardedFileSystem(planPath.toUri()).exists(planPath)) {
+				throw new FileNotFoundException("Plan file " + planFile + " does not exist.");
+			}
+			for (String file : filesToCopy) {
+				Path filePath = new Path(file);
+				if (!FileSystem.getUnguardedFileSystem(filePath.toUri()).exists(filePath)) {
+					throw new FileNotFoundException("Additional file " + file + " does not exist.");
+				}
+			}
+
+			// setup temporary local directory for flink python library and user files
+			Path targetDir = new Path(tmpPlanFilesDir);
+			deleteIfExists(targetDir);
+			targetDir.getFileSystem().mkdirs(targetDir);
+
+			// extract and unzip flink library to temporary location
+			unzipPythonLibrary(new Path(tmpPlanFilesDir));
+
+			// copy user files to temporary location
 			Path tmpPlanFilesPath = new Path(tmpPlanFilesDir);
-			deleteIfExists(tmpPlanFilesPath);
-			FileCache.copy(new Path(pythonLibraryPath), tmpPlanFilesPath, false);
-			copyFile(new Path(planFile), tmpPlanFilesPath, FLINK_PYTHON_PLAN_NAME);
+			copyFile(planPath, tmpPlanFilesPath, FLINK_PYTHON_PLAN_NAME);
 			for (String file : filesToCopy) {
 				Path source = new Path(file);
 				copyFile(source, tmpPlanFilesPath, source.getName());
@@ -167,10 +182,7 @@ public class PythonPlanBinder {
 
 				receivePlan(env);
 
-				// upload files to remote FS and register on Distributed Cache
-				deleteIfExists(tmpDistributedDir);
-				FileCache.copy(tmpPlanFilesPath, tmpDistributedDir, true);
-				env.registerCachedFile(tmpDistributedDir.toUri().toString(), FLINK_PYTHON_DC_ID);
+				env.registerCachedFile(tmpPlanFilesPath.toUri().toString(), FLINK_PYTHON_DC_ID, true);
 
 				JobExecutionResult jer = env.execute();
 				long runtime = jer.getNetRuntime();
@@ -182,9 +194,6 @@ public class PythonPlanBinder {
 		} finally {
 			try {
 				// clean up created files
-				FileSystem distributedFS = tmpDistributedDir.getFileSystem();
-				distributedFS.delete(tmpDistributedDir, true);
-
 				FileSystem local = FileSystem.getLocalFileSystem();
 				local.delete(new Path(tmpPlanFilesDir), true);
 			} catch (IOException ioe) {
@@ -194,6 +203,34 @@ public class PythonPlanBinder {
 					streamer.close();
 				}
 			}
+		}
+	}
+
+	private static void unzipPythonLibrary(Path targetDir) throws IOException {
+		FileSystem targetFs = targetDir.getFileSystem();
+		ClassLoader classLoader = PythonPlanBinder.class.getClassLoader();
+		try (ZipInputStream zis = new ZipInputStream(classLoader.getResourceAsStream("python-source.zip"))) {
+			ZipEntry entry = zis.getNextEntry();
+			while (entry != null) {
+				String fileName = entry.getName();
+				Path newFile = new Path(targetDir, fileName);
+				if (entry.isDirectory()) {
+					targetFs.mkdirs(newFile);
+				} else {
+					try {
+						LOG.debug("Unzipping to {}.", newFile);
+						FSDataOutputStream fsDataOutputStream = targetFs.create(newFile, FileSystem.WriteMode.NO_OVERWRITE);
+						IOUtils.copyBytes(zis, fsDataOutputStream, false);
+					} catch (Exception e) {
+						zis.closeEntry();
+						throw new IOException("Failed to unzip flink python library.", e);
+					}
+				}
+
+				zis.closeEntry();
+				entry = zis.getNextEntry();
+			}
+			zis.closeEntry();
 		}
 	}
 
@@ -209,7 +246,7 @@ public class PythonPlanBinder {
 	private static void copyFile(Path source, Path targetDirectory, String name) throws IOException {
 		Path targetFilePath = new Path(targetDirectory, name);
 		deleteIfExists(targetFilePath);
-		FileCache.copy(source, targetFilePath, true);
+		FileUtils.copy(source, targetFilePath, true);
 	}
 
 	//====Plan==========================================================================================================

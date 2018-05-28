@@ -20,14 +20,13 @@ package org.apache.flink.storm.api;
 
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.client.program.ClusterClient;
 import org.apache.flink.client.program.JobWithJars;
 import org.apache.flink.client.program.ProgramInvocationException;
 import org.apache.flink.client.program.StandaloneClusterClient;
 import org.apache.flink.configuration.AkkaOptions;
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
+import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.client.JobStatusMessage;
@@ -156,7 +155,7 @@ public class FlinkClient {
 		return this;
 	}
 
-	// The following methods are derived from "backtype.storm.generated.Nimubs.Client"
+	// The following methods are derived from "backtype.storm.generated.Nimbus.Client"
 
 	/**
 	 * Parameter {@code uploadedJarLocation} is actually used to point to the local jar, because Flink does not support
@@ -202,10 +201,10 @@ public class FlinkClient {
 		jobGraph.addJar(new Path(uploadedJarUri));
 
 		final Configuration configuration = jobGraph.getJobConfiguration();
-		configuration.setString(ConfigConstants.JOB_MANAGER_IPC_ADDRESS_KEY, jobManagerHost);
-		configuration.setInteger(ConfigConstants.JOB_MANAGER_IPC_PORT_KEY, jobManagerPort);
+		configuration.setString(JobManagerOptions.ADDRESS, jobManagerHost);
+		configuration.setInteger(JobManagerOptions.PORT, jobManagerPort);
 
-		final ClusterClient client;
+		final StandaloneClusterClient client;
 		try {
 			client = new StandaloneClusterClient(configuration);
 		} catch (final Exception e) {
@@ -242,10 +241,10 @@ public class FlinkClient {
 		}
 
 		final Configuration configuration = GlobalConfiguration.loadConfiguration();
-		configuration.setString(ConfigConstants.JOB_MANAGER_IPC_ADDRESS_KEY, this.jobManagerHost);
-		configuration.setInteger(ConfigConstants.JOB_MANAGER_IPC_PORT_KEY, this.jobManagerPort);
+		configuration.setString(JobManagerOptions.ADDRESS, this.jobManagerHost);
+		configuration.setInteger(JobManagerOptions.PORT, this.jobManagerPort);
 
-		final ClusterClient client;
+		final StandaloneClusterClient client;
 		try {
 			client = new StandaloneClusterClient(configuration);
 		} catch (final Exception e) {

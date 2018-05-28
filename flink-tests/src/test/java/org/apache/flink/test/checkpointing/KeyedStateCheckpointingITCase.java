@@ -24,11 +24,9 @@ import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.contrib.streaming.state.RocksDBStateBackend;
-import org.apache.flink.runtime.minicluster.LocalFlinkMiniCluster;
 import org.apache.flink.runtime.state.AbstractStateBackend;
 import org.apache.flink.runtime.state.CheckpointListener;
 import org.apache.flink.runtime.state.filesystem.FsStateBackend;
@@ -38,11 +36,10 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
-import org.apache.flink.streaming.util.TestStreamEnvironment;
+import org.apache.flink.test.util.MiniClusterResource;
 import org.apache.flink.util.TestLogger;
 
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -60,11 +57,11 @@ import static org.junit.Assert.fail;
 
 /**
  * A simple test that runs a streaming topology with checkpointing enabled.
- * 
- * The test triggers a failure after a while and verifies that, after
+ *
+ * <p>The test triggers a failure after a while and verifies that, after
  * completion, the state reflects the "exactly once" semantics.
- * 
- * It is designed to check partitioned states.
+ *
+ * <p>It is designed to check partitioned states.
  */
 @SuppressWarnings("serial")
 public class KeyedStateCheckpointingITCase extends TestLogger {
@@ -80,24 +77,17 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
 
 	// ------------------------------------------------------------------------
 
-	private static LocalFlinkMiniCluster cluster;
+	@ClassRule
+	public static final MiniClusterResource MINI_CLUSTER_RESOURCE = new MiniClusterResource(
+		new MiniClusterResource.MiniClusterResourceConfiguration(
+			getConfiguration(),
+			NUM_TASK_MANAGERS,
+			NUM_TASK_SLOTS));
 
-	@BeforeClass
-	public static void startCluster() throws Exception {
+	private static Configuration getConfiguration() {
 		Configuration config = new Configuration();
-		config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, NUM_TASK_MANAGERS);
-		config.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, NUM_TASK_SLOTS);
 		config.setLong(TaskManagerOptions.MANAGED_MEMORY_SIZE, 12L);
-
-		cluster = new LocalFlinkMiniCluster(config, false);
-		cluster.start();
-	}
-
-	@AfterClass
-	public static void stopCluster() throws Exception{
-		if (cluster != null) {
-			cluster.stop();
-		}
+		return config;
 	}
 
 	// ------------------------------------------------------------------------
@@ -150,7 +140,7 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
 	protected void testProgramWithBackend(AbstractStateBackend stateBackend) throws Exception {
 		assertEquals("Broken test setup", 0, (NUM_STRINGS / 2) % NUM_KEYS);
 
-		final StreamExecutionEnvironment env = new TestStreamEnvironment(cluster, PARALLELISM);
+		final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 		env.setParallelism(PARALLELISM);
 		env.enableCheckpointing(500);
 		env.getConfig().disableSysoutLogging();
@@ -197,7 +187,7 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
 	 * A source that generates a sequence of integers and throttles down until a checkpoint
 	 * has happened.
 	 */
-	private static class IntGeneratingSourceFunction extends RichParallelSourceFunction<Integer> 
+	private static class IntGeneratingSourceFunction extends RichParallelSourceFunction<Integer>
 		implements ListCheckpointed<Integer>, CheckpointListener {
 
 		private final int numElements;
@@ -363,7 +353,7 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
 		}
 	}
 
-	public static class IdentityKeySelector<T> implements KeySelector<T, T> {
+	private static class IdentityKeySelector<T> implements KeySelector<T, T> {
 
 		@Override
 		public T getKey(T value) throws Exception {
@@ -375,6 +365,9 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
 	//  data types
 	// ------------------------------------------------------------------------
 
+	/**
+	 * Custom boxed long type that does not implement Serializable.
+	 */
 	public static class NonSerializableLong {
 
 		public long value;
@@ -389,7 +382,7 @@ public class KeyedStateCheckpointingITCase extends TestLogger {
 
 		@Override
 		public boolean equals(Object obj) {
-			return this == obj || 
+			return this == obj ||
 					obj != null && obj.getClass() == getClass() && ((NonSerializableLong) obj).value == this.value;
 		}
 

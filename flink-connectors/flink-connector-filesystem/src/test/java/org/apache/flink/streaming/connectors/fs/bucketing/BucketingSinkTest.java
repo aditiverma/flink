@@ -22,6 +22,7 @@ import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.streaming.api.operators.StreamSink;
 import org.apache.flink.streaming.connectors.fs.AvroKeyValueSinkWriter;
 import org.apache.flink.streaming.connectors.fs.Clock;
@@ -29,10 +30,11 @@ import org.apache.flink.streaming.connectors.fs.SequenceFileWriter;
 import org.apache.flink.streaming.connectors.fs.StringWriter;
 import org.apache.flink.streaming.connectors.fs.Writer;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.tasks.OperatorStateHandles;
 import org.apache.flink.streaming.util.AbstractStreamOperatorTestHarness;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
 import org.apache.flink.util.NetUtils;
+import org.apache.flink.util.OperatingSystem;
+import org.apache.flink.util.TestLogger;
 
 import org.apache.avro.Schema;
 import org.apache.avro.file.DataFileConstants;
@@ -53,6 +55,7 @@ import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.Text;
 import org.junit.AfterClass;
 import org.junit.Assert;
+import org.junit.Assume;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Test;
@@ -65,21 +68,22 @@ import java.io.InputStreamReader;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.apache.flink.streaming.connectors.fs.bucketing.BucketingSinkTestUtils.IN_PROGRESS_SUFFIX;
+import static org.apache.flink.streaming.connectors.fs.bucketing.BucketingSinkTestUtils.PART_PREFIX;
+import static org.apache.flink.streaming.connectors.fs.bucketing.BucketingSinkTestUtils.PENDING_SUFFIX;
+import static org.apache.flink.streaming.connectors.fs.bucketing.BucketingSinkTestUtils.VALID_LENGTH_SUFFIX;
+import static org.apache.flink.streaming.connectors.fs.bucketing.BucketingSinkTestUtils.checkLocalFs;
+
 /**
  * Tests for the {@link BucketingSink}.
  */
-public class BucketingSinkTest {
+public class BucketingSinkTest extends TestLogger {
 	@ClassRule
 	public static TemporaryFolder tempFolder = new TemporaryFolder();
 
 	private static MiniDFSCluster hdfsCluster;
 	private static org.apache.hadoop.fs.FileSystem dfs;
 	private static String hdfsURI;
-
-	private static final String PART_PREFIX = "part";
-	private static final String PENDING_SUFFIX = ".pending";
-	private static final String IN_PROGRESS_SUFFIX = ".in-progress";
-	private static final String VALID_LENGTH_SUFFIX = ".valid";
 
 	private OneInputStreamOperatorTestHarness<String, Object> createRescalingTestSink(
 		File outDir, int totalParallelism, int taskIdx, long inactivityInterval) throws Exception {
@@ -135,6 +139,8 @@ public class BucketingSinkTest {
 
 	@BeforeClass
 	public static void createHDFS() throws IOException {
+		Assume.assumeTrue("HDFS cluster cannot be started on Windows without extensions.", !OperatingSystem.isWindows());
+
 		Configuration conf = new Configuration();
 
 		File dataDir = tempFolder.newFolder();
@@ -152,7 +158,9 @@ public class BucketingSinkTest {
 
 	@AfterClass
 	public static void destroyHDFS() {
-		hdfsCluster.shutdown();
+		if (hdfsCluster != null) {
+			hdfsCluster.shutdown();
+		}
 	}
 
 	@Test
@@ -180,13 +188,13 @@ public class BucketingSinkTest {
 
 		testHarness.processElement(new StreamRecord<>("test1", 1L));
 		testHarness.processElement(new StreamRecord<>("test2", 1L));
-		checkFs(outDir, 2, 0 , 0, 0);
+		checkLocalFs(outDir, 2, 0 , 0, 0);
 
 		testHarness.setProcessingTime(101L);	// put some in pending
-		checkFs(outDir, 0, 2, 0, 0);
+		checkLocalFs(outDir, 0, 2, 0, 0);
 
 		testHarness.snapshot(0, 0);				// put them in pending for 0
-		checkFs(outDir, 0, 2, 0, 0);
+		checkLocalFs(outDir, 0, 2, 0, 0);
 
 		testHarness.processElement(new StreamRecord<>("test3", 1L));
 		testHarness.processElement(new StreamRecord<>("test4", 1L));
@@ -194,13 +202,13 @@ public class BucketingSinkTest {
 		testHarness.setProcessingTime(202L);	// put some in pending
 
 		testHarness.snapshot(1, 0);				// put them in pending for 1
-		checkFs(outDir, 0, 4, 0, 0);
+		checkLocalFs(outDir, 0, 4, 0, 0);
 
 		testHarness.notifyOfCompletedCheckpoint(0);	// put the pending for 0 to the "committed" state
-		checkFs(outDir, 0, 2, 2, 0);
+		checkLocalFs(outDir, 0, 2, 2, 0);
 
 		testHarness.notifyOfCompletedCheckpoint(1); // put the pending for 1 to the "committed" state
-		checkFs(outDir, 0, 0, 4, 0);
+		checkLocalFs(outDir, 0, 0, 4, 0);
 	}
 
 	@Test
@@ -215,36 +223,36 @@ public class BucketingSinkTest {
 
 		testHarness.processElement(new StreamRecord<>("test1", 1L));
 		testHarness.processElement(new StreamRecord<>("test2", 1L));
-		checkFs(outDir, 2, 0 , 0, 0);
+		checkLocalFs(outDir, 2, 0 , 0, 0);
 
 		// this is to check the inactivity threshold
 		testHarness.setProcessingTime(101L);
-		checkFs(outDir, 0, 2, 0, 0);
+		checkLocalFs(outDir, 0, 2, 0, 0);
 
 		testHarness.processElement(new StreamRecord<>("test3", 1L));
-		checkFs(outDir, 1, 2, 0, 0);
+		checkLocalFs(outDir, 1, 2, 0, 0);
 
 		testHarness.snapshot(0, 0);
-		checkFs(outDir, 1, 2, 0, 0);
+		checkLocalFs(outDir, 1, 2, 0, 0);
 
 		testHarness.notifyOfCompletedCheckpoint(0);
-		checkFs(outDir, 1, 0, 2, 0);
+		checkLocalFs(outDir, 1, 0, 2, 0);
 
-		OperatorStateHandles snapshot = testHarness.snapshot(1, 0);
+		OperatorSubtaskState snapshot = testHarness.snapshot(1, 0);
 
 		testHarness.close();
-		checkFs(outDir, 0, 1, 2, 0);
+		checkLocalFs(outDir, 0, 1, 2, 0);
 
 		testHarness = createRescalingTestSink(outDir, 1, 0, 100);
 		testHarness.setup();
 		testHarness.initializeState(snapshot);
 		testHarness.open();
-		checkFs(outDir, 0, 0, 3, 1);
+		checkLocalFs(outDir, 0, 0, 3, 1);
 
 		snapshot = testHarness.snapshot(2, 0);
 
 		testHarness.processElement(new StreamRecord<>("test4", 10));
-		checkFs(outDir, 1, 0, 3, 1);
+		checkLocalFs(outDir, 1, 0, 3, 1);
 
 		testHarness = createRescalingTestSink(outDir, 1, 0, 100);
 		testHarness.setup();
@@ -252,13 +260,13 @@ public class BucketingSinkTest {
 		testHarness.open();
 
 		// the in-progress file remains as we do not clean up now
-		checkFs(outDir, 1, 0, 3, 1);
+		checkLocalFs(outDir, 1, 0, 3, 1);
 
 		testHarness.close();
 
 		// at close it is not moved to final because it is not part
 		// of the current task's state, it was just a not cleaned up leftover.
-		checkFs(outDir, 1, 0, 3, 1);
+		checkLocalFs(outDir, 1, 0, 3, 1);
 	}
 
 	@Test
@@ -274,22 +282,22 @@ public class BucketingSinkTest {
 		testHarness2.open();
 
 		testHarness1.processElement(new StreamRecord<>("test1", 0L));
-		checkFs(outDir, 1, 0, 0, 0);
+		checkLocalFs(outDir, 1, 0, 0, 0);
 
 		testHarness2.processElement(new StreamRecord<>("test2", 0L));
-		checkFs(outDir, 2, 0, 0, 0);
+		checkLocalFs(outDir, 2, 0, 0, 0);
 
 		// intentionally we snapshot them in the reverse order so that the states are shuffled
-		OperatorStateHandles mergedSnapshot = AbstractStreamOperatorTestHarness.repackageState(
+		OperatorSubtaskState mergedSnapshot = AbstractStreamOperatorTestHarness.repackageState(
 			testHarness2.snapshot(0, 0),
 			testHarness1.snapshot(0, 0)
 		);
 
-		checkFs(outDir, 2, 0, 0, 0);
+		checkLocalFs(outDir, 2, 0, 0, 0);
 
 		// this will not be included in any checkpoint so it can be cleaned up (although we do not)
 		testHarness2.processElement(new StreamRecord<>("test3", 0L));
-		checkFs(outDir, 3, 0, 0, 0);
+		checkLocalFs(outDir, 3, 0, 0, 0);
 
 		testHarness1 = createRescalingTestSink(outDir, 2, 0, 100);
 		testHarness1.setup();
@@ -298,20 +306,20 @@ public class BucketingSinkTest {
 
 		// the one in-progress will be the one assigned to the next instance,
 		// the other is the test3 which is just not cleaned up
-		checkFs(outDir, 2, 0, 1, 1);
+		checkLocalFs(outDir, 2, 0, 1, 1);
 
 		testHarness2 = createRescalingTestSink(outDir, 2, 1, 100);
 		testHarness2.setup();
 		testHarness2.initializeState(mergedSnapshot);
 		testHarness2.open();
 
-		checkFs(outDir, 1, 0, 2, 2);
+		checkLocalFs(outDir, 1, 0, 2, 2);
 
 		testHarness1.close();
 		testHarness2.close();
 
 		// the 1 in-progress can be discarded.
-		checkFs(outDir, 1, 0, 2, 2);
+		checkLocalFs(outDir, 1, 0, 2, 2);
 	}
 
 	@Test
@@ -331,17 +339,17 @@ public class BucketingSinkTest {
 		testHarness3.open();
 
 		testHarness1.processElement(new StreamRecord<>("test1", 0L));
-		checkFs(outDir, 1, 0, 0, 0);
+		checkLocalFs(outDir, 1, 0, 0, 0);
 
 		testHarness2.processElement(new StreamRecord<>("test2", 0L));
-		checkFs(outDir, 2, 0, 0, 0);
+		checkLocalFs(outDir, 2, 0, 0, 0);
 
 		testHarness3.processElement(new StreamRecord<>("test3", 0L));
 		testHarness3.processElement(new StreamRecord<>("test4", 0L));
-		checkFs(outDir, 4, 0, 0, 0);
+		checkLocalFs(outDir, 4, 0, 0, 0);
 
 		// intentionally we snapshot them in the reverse order so that the states are shuffled
-		OperatorStateHandles mergedSnapshot = AbstractStreamOperatorTestHarness.repackageState(
+		OperatorSubtaskState mergedSnapshot = AbstractStreamOperatorTestHarness.repackageState(
 			testHarness3.snapshot(0, 0),
 			testHarness1.snapshot(0, 0),
 			testHarness2.snapshot(0, 0)
@@ -352,14 +360,14 @@ public class BucketingSinkTest {
 		testHarness1.initializeState(mergedSnapshot);
 		testHarness1.open();
 
-		checkFs(outDir, 1, 0, 3, 3);
+		checkLocalFs(outDir, 1, 0, 3, 3);
 
 		testHarness2 = createRescalingTestSink(outDir, 2, 1, 100);
 		testHarness2.setup();
 		testHarness2.initializeState(mergedSnapshot);
 		testHarness2.open();
 
-		checkFs(outDir, 0, 0, 4, 4);
+		checkLocalFs(outDir, 0, 0, 4, 4);
 	}
 
 	@Test
@@ -377,16 +385,16 @@ public class BucketingSinkTest {
 		testHarness1.processElement(new StreamRecord<>("test1", 1L));
 		testHarness1.processElement(new StreamRecord<>("test2", 1L));
 
-		checkFs(outDir, 2, 0, 0, 0);
+		checkLocalFs(outDir, 2, 0, 0, 0);
 
 		testHarness2.processElement(new StreamRecord<>("test3", 1L));
 		testHarness2.processElement(new StreamRecord<>("test4", 1L));
 		testHarness2.processElement(new StreamRecord<>("test5", 1L));
 
-		checkFs(outDir, 5, 0, 0, 0);
+		checkLocalFs(outDir, 5, 0, 0, 0);
 
 		// intentionally we snapshot them in the reverse order so that the states are shuffled
-		OperatorStateHandles mergedSnapshot = AbstractStreamOperatorTestHarness.repackageState(
+		OperatorSubtaskState mergedSnapshot = AbstractStreamOperatorTestHarness.repackageState(
 			testHarness2.snapshot(0, 0),
 			testHarness1.snapshot(0, 0)
 		);
@@ -396,27 +404,27 @@ public class BucketingSinkTest {
 		testHarness1.initializeState(mergedSnapshot);
 		testHarness1.open();
 
-		checkFs(outDir, 2, 0, 3, 3);
+		checkLocalFs(outDir, 2, 0, 3, 3);
 
 		testHarness2 = createRescalingTestSink(outDir, 3, 1, 100);
 		testHarness2.setup();
 		testHarness2.initializeState(mergedSnapshot);
 		testHarness2.open();
 
-		checkFs(outDir, 0, 0, 5, 5);
+		checkLocalFs(outDir, 0, 0, 5, 5);
 
 		OneInputStreamOperatorTestHarness<String, Object> testHarness3 = createRescalingTestSink(outDir, 3, 2, 100);
 		testHarness3.setup();
 		testHarness3.initializeState(mergedSnapshot);
 		testHarness3.open();
 
-		checkFs(outDir, 0, 0, 5, 5);
+		checkLocalFs(outDir, 0, 0, 5, 5);
 
 		testHarness1.processElement(new StreamRecord<>("test6", 0));
 		testHarness2.processElement(new StreamRecord<>("test6", 0));
 		testHarness3.processElement(new StreamRecord<>("test6", 0));
 
-		checkFs(outDir, 3, 0, 5, 5);
+		checkLocalFs(outDir, 3, 0, 5, 5);
 
 		testHarness1.snapshot(1, 0);
 		testHarness2.snapshot(1, 0);
@@ -426,35 +434,7 @@ public class BucketingSinkTest {
 		testHarness2.close();
 		testHarness3.close();
 
-		checkFs(outDir, 0, 3, 5, 5);
-	}
-
-	private void checkFs(File outDir, int inprogress, int pending, int completed, int valid) throws IOException {
-		int inProg = 0;
-		int pend = 0;
-		int compl = 0;
-		int val = 0;
-
-		for (File file: FileUtils.listFiles(outDir, null, true)) {
-			if (file.getAbsolutePath().endsWith("crc")) {
-				continue;
-			}
-			String path = file.getPath();
-			if (path.endsWith(IN_PROGRESS_SUFFIX)) {
-				inProg++;
-			} else if (path.endsWith(PENDING_SUFFIX)) {
-				pend++;
-			} else if (path.endsWith(VALID_LENGTH_SUFFIX)) {
-				val++;
-			} else if (path.contains(PART_PREFIX)) {
-				compl++;
-			}
-		}
-
-		Assert.assertEquals(inprogress, inProg);
-		Assert.assertEquals(pending, pend);
-		Assert.assertEquals(completed, compl);
-		Assert.assertEquals(valid, val);
+		checkLocalFs(outDir, 0, 3, 5, 5);
 	}
 
 	/**

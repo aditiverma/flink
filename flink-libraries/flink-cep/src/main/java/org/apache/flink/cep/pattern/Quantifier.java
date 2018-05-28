@@ -55,7 +55,7 @@ public class Quantifier {
 		return new Quantifier(consumingStrategy, QuantifierProperty.SINGLE);
 	}
 
-	public static Quantifier oneOrMore(final ConsumingStrategy consumingStrategy) {
+	public static Quantifier looping(final ConsumingStrategy consumingStrategy) {
 		return new Quantifier(consumingStrategy, QuantifierProperty.LOOPING);
 	}
 
@@ -67,12 +67,12 @@ public class Quantifier {
 		return properties.contains(property);
 	}
 
-	public ConsumingStrategy getConsumingStrategy() {
-		return consumingStrategy;
-	}
-
 	public ConsumingStrategy getInnerConsumingStrategy() {
 		return innerConsumingStrategy;
+	}
+
+	public ConsumingStrategy getConsumingStrategy() {
+		return consumingStrategy;
 	}
 
 	private static void checkPattern(boolean condition, Object errorMessage) {
@@ -105,6 +105,15 @@ public class Quantifier {
 		properties.add(Quantifier.QuantifierProperty.OPTIONAL);
 	}
 
+	public void greedy() {
+		checkPattern(!(innerConsumingStrategy == ConsumingStrategy.SKIP_TILL_ANY),
+			"Option not applicable to FollowedByAny pattern");
+		checkPattern(!hasProperty(Quantifier.QuantifierProperty.SINGLE),
+			"Option not applicable to singleton quantifier");
+
+		properties.add(QuantifierProperty.GREEDY);
+	}
+
 	@Override
 	public boolean equals(Object o) {
 		if (this == o) {
@@ -130,7 +139,8 @@ public class Quantifier {
 		SINGLE,
 		LOOPING,
 		TIMES,
-		OPTIONAL
+		OPTIONAL,
+		GREEDY
 	}
 
 	/**
@@ -153,9 +163,8 @@ public class Quantifier {
 		private final int to;
 
 		private Times(int from, int to) {
-			Preconditions.checkArgument(from >= 0, "The from should be a non-negative number greater than or equal to 0.");
+			Preconditions.checkArgument(from > 0, "The from should be a positive number greater than 0.");
 			Preconditions.checkArgument(to >= from, "The to should be a number greater than or equal to from: " + from + ".");
-			Preconditions.checkArgument(from != to || from != 0, "The from and to should not be both equal to 0.");
 			this.from = from;
 			this.to = to;
 		}

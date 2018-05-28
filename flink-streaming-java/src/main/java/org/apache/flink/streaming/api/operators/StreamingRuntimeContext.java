@@ -18,10 +18,12 @@
 
 package org.apache.flink.streaming.api.operators;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.accumulators.Accumulator;
 import org.apache.flink.api.common.functions.BroadcastVariableInitializer;
 import org.apache.flink.api.common.functions.util.AbstractRuntimeUDFContext;
+import org.apache.flink.api.common.state.AggregatingState;
+import org.apache.flink.api.common.state.AggregatingStateDescriptor;
 import org.apache.flink.api.common.state.FoldingState;
 import org.apache.flink.api.common.state.FoldingStateDescriptor;
 import org.apache.flink.api.common.state.KeyedStateStore;
@@ -48,7 +50,7 @@ import java.util.Map;
  * Implementation of the {@link org.apache.flink.api.common.functions.RuntimeContext},
  * for streaming operators.
  */
-@PublicEvolving
+@Internal
 public class StreamingRuntimeContext extends AbstractRuntimeUDFContext {
 
 	/** The operator to which this function belongs. */
@@ -130,6 +132,13 @@ public class StreamingRuntimeContext extends AbstractRuntimeUDFContext {
 		KeyedStateStore keyedStateStore = checkPreconditionsAndGetKeyedStateStore(stateProperties);
 		stateProperties.initializeSerializerUnlessSet(getExecutionConfig());
 		return keyedStateStore.getReducingState(stateProperties);
+	}
+
+	@Override
+	public <IN, ACC, OUT> AggregatingState<IN, OUT> getAggregatingState(AggregatingStateDescriptor<IN, ACC, OUT> stateProperties) {
+		KeyedStateStore keyedStateStore = checkPreconditionsAndGetKeyedStateStore(stateProperties);
+		stateProperties.initializeSerializerUnlessSet(getExecutionConfig());
+		return keyedStateStore.getAggregatingState(stateProperties);
 	}
 
 	@Override

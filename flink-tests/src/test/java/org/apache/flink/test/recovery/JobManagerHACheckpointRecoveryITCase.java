@@ -18,21 +18,17 @@
 
 package org.apache.flink.test.recovery;
 
-import akka.actor.ActorRef;
-import akka.actor.ActorSystem;
-import akka.actor.PoisonPill;
-import org.apache.commons.io.FileUtils;
-import org.apache.curator.test.TestingServer;
 import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.CoreOptions;
 import org.apache.flink.configuration.HighAvailabilityOptions;
+import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.contrib.streaming.state.RocksDBStateBackend;
 import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.akka.ListeningBehaviour;
@@ -46,6 +42,7 @@ import org.apache.flink.runtime.jobgraph.JobStatus;
 import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.leaderelection.TestingListener;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
+import org.apache.flink.runtime.metrics.NoOpMetricRegistry;
 import org.apache.flink.runtime.minicluster.LocalFlinkMiniCluster;
 import org.apache.flink.runtime.state.AbstractStateBackend;
 import org.apache.flink.runtime.state.CheckpointListener;
@@ -70,6 +67,12 @@ import org.apache.flink.testutils.junit.RetryOnFailure;
 import org.apache.flink.testutils.junit.RetryRule;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.TestLogger;
+
+import akka.actor.ActorRef;
+import akka.actor.ActorSystem;
+import akka.actor.PoisonPill;
+import org.apache.commons.io.FileUtils;
+import org.apache.curator.test.TestingServer;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.Rule;
@@ -77,11 +80,6 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import scala.Option;
-import scala.Some;
-import scala.Tuple2;
-import scala.concurrent.duration.Deadline;
-import scala.concurrent.duration.FiniteDuration;
 
 import java.io.File;
 import java.io.IOException;
@@ -93,20 +91,29 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.atomic.AtomicReference;
 
+import scala.Option;
+import scala.Some;
+import scala.Tuple2;
+import scala.concurrent.duration.Deadline;
+import scala.concurrent.duration.FiniteDuration;
+
 import static org.apache.flink.runtime.messages.JobManagerMessages.SubmitJob;
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
+/**
+ * Test JobManager recovery.
+ */
 public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 
 	@Rule
 	public RetryRule retryRule = new RetryRule();
 
-	private final static ZooKeeperTestEnvironment ZooKeeper = new ZooKeeperTestEnvironment(1);
+	private static final ZooKeeperTestEnvironment ZooKeeper = new ZooKeeperTestEnvironment(1);
 
-	private final static FiniteDuration TestTimeOut = new FiniteDuration(5, TimeUnit.MINUTES);
+	private static final FiniteDuration TestTimeOut = new FiniteDuration(5, TimeUnit.MINUTES);
 
 	private static final File FileStateBackendBasePath;
 
@@ -147,16 +154,16 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 
 	private static final int Parallelism = 8;
 
-	private static CountDownLatch CompletedCheckpointsLatch = new CountDownLatch(4);
-	private static CountDownLatch CompletedCheckpointsLatch2 = new CountDownLatch(6);
+	private static CountDownLatch completedCheckpointsLatch = new CountDownLatch(4);
+	private static CountDownLatch completedCheckpointsLatch2 = new CountDownLatch(6);
 
-	private static AtomicLongArray RecoveredStates = new AtomicLongArray(Parallelism);
+	private static AtomicLongArray recoveredStates = new AtomicLongArray(Parallelism);
 
-	private static CountDownLatch FinalCountLatch = new CountDownLatch(1);
+	private static CountDownLatch finalCountLatch = new CountDownLatch(1);
 
-	private static AtomicReference<Long> FinalCount = new AtomicReference<>();
+	private static AtomicReference<Long> finalCount = new AtomicReference<>();
 
-	private static long LastElement = -1;
+	private static long lastElement = -1;
 
 	private static final int retainedCheckpoints = 2;
 
@@ -166,7 +173,7 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 	 * @see <a href="https://issues.apache.org/jira/browse/FLINK-3185">FLINK-3185</a>
 	 */
 	@Test
-	@RetryOnFailure(times=1)
+	@RetryOnFailure(times = 1)
 	public void testCheckpointRecoveryFailure() throws Exception {
 		final Deadline testDeadline = TestTimeOut.fromNow();
 		final String zooKeeperQuorum = ZooKeeper.getConnectString();
@@ -212,6 +219,7 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 				ResourceID.generate(),
 				taskManagerSystem,
 				highAvailabilityServices,
+				NoOpMetricRegistry.INSTANCE,
 				"localhost",
 				Option.<String>empty(),
 				false,
@@ -355,12 +363,11 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 		try {
 			Configuration config = new Configuration();
 
-			config.setInteger(CoreOptions.MAX_RETAINED_CHECKPOINTS, retainedCheckpoints);
+			config.setInteger(CheckpointingOptions.MAX_RETAINED_CHECKPOINTS, retainedCheckpoints);
 			config.setInteger(ConfigConstants.LOCAL_NUMBER_JOB_MANAGER, numJMs);
 			config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, numTMs);
-			config.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, numSlots);
-			config.setString(ConfigConstants.CHECKPOINTS_DIRECTORY_KEY, temporaryFolder.newFolder().toString());
-
+			config.setInteger(TaskManagerOptions.NUM_TASK_SLOTS, numSlots);
+			config.setString(CheckpointingOptions.CHECKPOINTS_DIRECTORY, temporaryFolder.newFolder().toString());
 
 			String tmpFolderString = temporaryFolder.newFolder().toString();
 			config.setString(HighAvailabilityOptions.HA_STORAGE_PATH, tmpFolderString);
@@ -399,17 +406,17 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 			JobGraph jobGraph = env.getStreamGraph().getJobGraph();
 			miniCluster.submitJobDetached(jobGraph);
 
-			CompletedCheckpointsLatch.await();
+			completedCheckpointsLatch.await();
 
 			jmGateway.tell(PoisonPill.getInstance());
 
 			// Wait to finish
-			FinalCountLatch.await();
+			finalCountLatch.await();
 
-			assertEquals(expectedSum, (long) FinalCount.get());
+			assertEquals(expectedSum, (long) finalCount.get());
 
 			for (int i = 0; i < Parallelism; i++) {
-				assertNotEquals(0, RecoveredStates.get(i));
+				assertNotEquals(0, recoveredStates.get(i));
 			}
 
 		} finally {
@@ -467,7 +474,7 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 				synchronized (ctx.getCheckpointLock()) {
 					if (current <= end) {
 						ctx.collect(current++);
-					} else if(repeat > 0) {
+					} else if (repeat > 0) {
 						--repeat;
 						current = 0;
 					} else {
@@ -481,9 +488,9 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 				}
 			}
 
-			CompletedCheckpointsLatch2.await();
+			completedCheckpointsLatch2.await();
 			synchronized (ctx.getCheckpointLock()) {
-				ctx.collect(LastElement);
+				ctx.collect(lastElement);
 			}
 		}
 
@@ -503,7 +510,7 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 
 			// This is necessary to make sure that something is recovered at all. Otherwise it
 			// might happen that the job is restarted from the beginning.
-			RecoveredStates.set(getRuntimeContext().getIndexOfThisSubtask(), 1);
+			recoveredStates.set(getRuntimeContext().getIndexOfThisSubtask(), 1);
 
 			sync.countDown();
 
@@ -535,12 +542,12 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 		@Override
 		public void invoke(Long value) throws Exception {
 
-			if (value == LastElement) {
+			if (value == lastElement) {
 				numberOfReceivedLastElements++;
 
 				if (numberOfReceivedLastElements == Parallelism) {
-					FinalCount.set(current);
-					FinalCountLatch.countDown();
+					finalCount.set(current);
+					finalCountLatch.countDown();
 				}
 				else if (numberOfReceivedLastElements > Parallelism) {
 					throw new IllegalStateException("Received more elements than parallelism.");
@@ -572,12 +579,12 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 		@Override
 		public void notifyCheckpointComplete(long checkpointId) throws Exception {
 			LOG.debug("Checkpoint {} completed.", checkpointId);
-			CompletedCheckpointsLatch.countDown();
-			CompletedCheckpointsLatch2.countDown();
+			completedCheckpointsLatch.countDown();
+			completedCheckpointsLatch2.countDown();
 		}
 	}
 
-	public static class StatefulFlatMap extends RichFlatMapFunction<Long, Long> implements CheckpointedFunction {
+	private static class StatefulFlatMap extends RichFlatMapFunction<Long, Long> implements CheckpointedFunction {
 
 		private static final long serialVersionUID = 9031079547885320663L;
 

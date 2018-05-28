@@ -56,8 +56,8 @@ public interface StateBinder {
 	 * @param stateDesc The {@code StateDescriptor} that contains the name of the state.
 	 *
 	 * @param <IN> The type of the values that go into the aggregating state
-	 * @param <ACC> The type of the values that are stored in the aggregating state   
-	 * @param <OUT> The type of the values that come out of the aggregating state   
+	 * @param <ACC> The type of the values that are stored in the aggregating state
+	 * @param <OUT> The type of the values that come out of the aggregating state
 	 */
 	<IN, ACC, OUT> AggregatingState<IN, OUT> createAggregatingState(
 			AggregatingStateDescriptor<IN, ACC, OUT> stateDesc) throws Exception;
@@ -69,7 +69,7 @@ public interface StateBinder {
 	 * @param <T> Type of the values folded into the state
 	 * @param <ACC> Type of the value in the state
 	 *
-	 * @deprecated will be removed in a future version
+	 * @deprecated will be removed in a future version in favor of {@link AggregatingState}
 	 */
 	@Deprecated
 	<T, ACC> FoldingState<T, ACC> createFoldingState(FoldingStateDescriptor<T, ACC> stateDesc) throws Exception;

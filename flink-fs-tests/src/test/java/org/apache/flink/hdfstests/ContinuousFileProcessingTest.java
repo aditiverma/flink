@@ -30,6 +30,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileInputSplit;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.testutils.OneShotLatch;
+import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.functions.source.ContinuousFileMonitoringFunction;
 import org.apache.flink.streaming.api.functions.source.ContinuousFileReaderOperator;
@@ -39,9 +40,9 @@ import org.apache.flink.streaming.api.functions.source.TimestampedFileInputSplit
 import org.apache.flink.streaming.api.operators.StreamSource;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.tasks.OperatorStateHandles;
 import org.apache.flink.streaming.util.AbstractStreamOperatorTestHarness;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
+import org.apache.flink.util.OperatingSystem;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -49,6 +50,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.junit.AfterClass;
 import org.junit.Assert;
+import org.junit.Assume;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Test;
@@ -88,6 +90,8 @@ public class ContinuousFileProcessingTest {
 
 	@BeforeClass
 	public static void createHDFS() {
+		Assume.assumeTrue("HDFS cluster cannot be start on Windows without extensions.", !OperatingSystem.isWindows());
+
 		try {
 			File hdfsDir = tempFolder.newFolder();
 
@@ -109,10 +113,8 @@ public class ContinuousFileProcessingTest {
 
 	@AfterClass
 	public static void destroyHDFS() {
-		try {
+		if (hdfsCluster != null) {
 			hdfsCluster.shutdown();
-		} catch (Throwable t) {
-			throw new RuntimeException(t);
 		}
 	}
 
@@ -436,7 +438,7 @@ public class ContinuousFileProcessingTest {
 		// to initialize another reader and compare the results of the
 		// two operators.
 
-		final OperatorStateHandles snapshot;
+		final OperatorSubtaskState snapshot;
 		synchronized (initTestInstance.getCheckpointLock()) {
 			snapshot = initTestInstance.snapshot(0L, 0L);
 		}
@@ -814,7 +816,7 @@ public class ContinuousFileProcessingTest {
 		// this means it has processed all the splits and updated its state.
 		synchronized (sourceContext.getCheckpointLock()) {}
 
-		OperatorStateHandles snapshot = testHarness.snapshot(0, 0);
+		OperatorSubtaskState snapshot = testHarness.snapshot(0, 0);
 		monitoringFunction.cancel();
 		runner.join();
 

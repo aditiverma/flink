@@ -57,6 +57,7 @@ object ExpressionParser extends JavaTokenParsers with PackratParsers {
   lazy val EXTRACT: Keyword = Keyword("extract")
   lazy val FLOOR: Keyword = Keyword("floor")
   lazy val CEIL: Keyword = Keyword("ceil")
+  lazy val LOG: Keyword = Keyword("log")
   lazy val YEARS: Keyword = Keyword("years")
   lazy val YEAR: Keyword = Keyword("year")
   lazy val MONTHS: Keyword = Keyword("months")
@@ -86,6 +87,7 @@ object ExpressionParser extends JavaTokenParsers with PackratParsers {
   lazy val FALSE: Keyword = Keyword("false")
   lazy val PRIMITIVE_ARRAY: Keyword = Keyword("PRIMITIVE_ARRAY")
   lazy val OBJECT_ARRAY: Keyword = Keyword("OBJECT_ARRAY")
+  lazy val MAP: Keyword = Keyword("MAP")
   lazy val BYTE: Keyword = Keyword("BYTE")
   lazy val SHORT: Keyword = Keyword("SHORT")
   lazy val INTERVAL_MONTHS: Keyword = Keyword("INTERVAL_MONTHS")
@@ -141,6 +143,7 @@ object ExpressionParser extends JavaTokenParsers with PackratParsers {
   lazy val dataType: PackratParser[TypeInformation[_]] =
     PRIMITIVE_ARRAY ~ "(" ~> dataType <~ ")" ^^ { ct => Types.PRIMITIVE_ARRAY(ct) } |
     OBJECT_ARRAY ~ "(" ~> dataType <~ ")" ^^ { ct => Types.OBJECT_ARRAY(ct) } |
+    MAP ~ "(" ~> dataType ~ "," ~ dataType <~ ")" ^^ { mt => Types.MAP(mt._1._1, mt._2)} |
     BYTE ^^ { e => Types.BYTE } |
     SHORT ^^ { e => Types.SHORT } |
     INTERVAL_MONTHS ^^ { e => Types.INTERVAL_MONTHS } |
@@ -201,7 +204,7 @@ object ExpressionParser extends JavaTokenParsers with PackratParsers {
   }
 
   lazy val atom: PackratParser[Expression] =
-    ( "(" ~> expression <~ ")" ) | literalExpr | fieldReference
+    ( "(" ~> expression <~ ")" ) | (fieldReference ||| literalExpr)
 
   lazy val over: PackratParser[Expression] = composite ~ OVER ~ fieldReference ^^ {
     case agg ~ _ ~ windowRef => UnresolvedOverCall(agg, windowRef)
@@ -242,6 +245,12 @@ object ExpressionParser extends JavaTokenParsers with PackratParsers {
   lazy val suffixCeil: PackratParser[Expression] =
     composite ~ "." ~ CEIL ~ "(" ~ timeIntervalUnit ~ ")" ^^ {
       case operand ~ _  ~ _ ~ _ ~ unit ~ _ => TemporalCeil(unit, operand)
+    }
+
+  // required because op.log(base) changes order of a parameters
+  lazy val suffixLog: PackratParser[Expression] =
+    composite ~ "." ~ LOG ~ "(" ~ expression ~ ")" ^^ {
+      case operand ~ _ ~ _ ~ _ ~ base ~ _ => Log(base, operand)
     }
 
   lazy val suffixFunctionCall: PackratParser[Expression] =
@@ -305,6 +314,8 @@ object ExpressionParser extends JavaTokenParsers with PackratParsers {
     // expressions that need special expression conversion
     suffixAs | suffixTimeInterval | suffixRowInterval | suffixToTimestamp | suffixToTime |
     suffixToDate |
+    // expression for log
+    suffixLog |
     // expressions that take enumerations
     suffixCast | suffixTrim | suffixTrimWithoutArgs | suffixExtract | suffixFloor | suffixCeil |
     // expressions that take literals

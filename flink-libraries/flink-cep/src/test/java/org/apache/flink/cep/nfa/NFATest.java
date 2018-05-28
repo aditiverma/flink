@@ -26,13 +26,14 @@ import org.apache.flink.cep.pattern.conditions.IterativeCondition;
 import org.apache.flink.cep.pattern.conditions.SimpleCondition;
 import org.apache.flink.core.memory.DataInputViewStreamWrapper;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
+import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.util.TestLogger;
 
-import org.apache.commons.io.output.ByteArrayOutputStream;
 import org.junit.Test;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -132,7 +133,7 @@ public class NFATest extends TestLogger {
 
 	/**
 	 * Tests that elements whose timestamp difference is exactly the window length are not matched.
-	 * The reaon is that the right window side (later elements) is exclusive.
+	 * The reason is that the right window side (later elements) is exclusive.
 	 */
 	@Test
 	public void testWindowBorders() {
@@ -174,6 +175,26 @@ public class NFATest extends TestLogger {
 		Collection<Map<String, List<Event>>> actualPatterns = runNFA(nfa, streamEvents);
 
 		assertEquals(expectedPatterns, actualPatterns);
+	}
+
+	@Test
+	public void testTimeoutWindowPruning2() throws IOException {
+		NFA<Event> nfa = createLoopingNFA(2);
+		List<StreamRecord<Event>> streamEvents = new ArrayList<>();
+
+		streamEvents.add(new StreamRecord<>(new Event(1, "loop", 1.0), 101L));
+		streamEvents.add(new StreamRecord<>(new Event(2, "loop", 2.0), 102L));
+		streamEvents.add(new StreamRecord<>(new Event(3, "loop", 3.0), 103L));
+		streamEvents.add(new StreamRecord<>(new Event(4, "loop", 4.0), 104L));
+		streamEvents.add(new StreamRecord<>(new Event(5, "loop", 5.0), 105L));
+		runNFA(nfa, streamEvents);
+
+		NFA.NFASerializer<Event> serializer = new NFA.NFASerializer<>(Event.createTypeSerializer());
+
+		//serialize
+		ByteArrayOutputStream baos = new ByteArrayOutputStream();
+		serializer.serialize(nfa, new DataOutputViewStreamWrapper(baos));
+		baos.close();
 	}
 
 	public <T> Collection<Map<String, List<T>>> runNFA(NFA<T> nfa, List<StreamRecord<T>> inputs) {
@@ -310,14 +331,13 @@ public class NFATest extends TestLogger {
 			NFA.NFASerializer<Event> copySerializer = new NFA.NFASerializer<>(Event.createTypeSerializer());
 			ByteArrayInputStream in = new ByteArrayInputStream(baos.toByteArray());
 			ByteArrayOutputStream out = new ByteArrayOutputStream();
-			copySerializer.copy(new DataInputViewStreamWrapper(in), new DataOutputViewStreamWrapper(out));
+			copySerializer.duplicate().copy(new DataInputViewStreamWrapper(in), new DataOutputViewStreamWrapper(out));
 			in.close();
 			out.close();
 
 			// deserialize
 			ByteArrayInputStream bais = new ByteArrayInputStream(out.toByteArray());
-			NFA.NFASerializer<Event> deserializer = new NFA.NFASerializer<>(Event.createTypeSerializer());
-			NFA<Event> copy = deserializer.deserialize(new DataInputViewStreamWrapper(bais));
+			NFA<Event> copy = serializer.duplicate().deserialize(new DataInputViewStreamWrapper(bais));
 			bais.close();
 
 			assertEquals(nfa, copy);
@@ -358,5 +378,18 @@ public class NFATest extends TestLogger {
 		nfa.addState(endingState);
 
 		return nfa;
+	}
+
+	private NFA<Event> createLoopingNFA(long windowLength) {
+		Pattern<Event, ?> pattern = Pattern.<Event>begin("loop").where(new SimpleCondition<Event>() {
+			private static final long serialVersionUID = 5726188262756267490L;
+
+			@Override
+			public boolean filter(Event value) throws Exception {
+				return value.getName().equals("loop");
+			}
+		}).timesOrMore(3).within(Time.milliseconds(windowLength));
+
+		return NFACompiler.compile(pattern, Event.createTypeSerializer(), false);
 	}
 }
